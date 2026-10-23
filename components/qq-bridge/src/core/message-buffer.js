@@ -20,6 +20,12 @@ function validReplyParts(item){
       ['retryAt','busyDeadline'].every(name=>part[name]===undefined||Number.isSafeInteger(part[name])&&part[name]>=0);
   })&&(item.deliveryNotice===undefined||typeof item.deliveryNotice==='string'&&item.deliveryNotice.length<=1000);
 }
+function validPendingRequest(item){
+  return item&&Array.isArray(item.rowIds)&&item.rowIds.length>0&&item.rowIds.length<=20&&item.rowIds.every(id=>typeof id==='string'&&id.length>0&&id.length<=100)&&item.throughId===item.rowIds.at(-1)&&
+    /^[a-f0-9]{64}$/.test(item.signature??'')&&typeof item.prompt==='string'&&item.prompt.length>0&&item.prompt.length<=18000&&
+    item.metadata&&/^[a-f0-9]{64}$/.test(item.metadata.batchId??'')&&JSON.stringify(item.metadata.historyExcludeIds)===JSON.stringify(item.rowIds)&&
+    [item.stickerRefs,item.annotationRefs].every(refs=>refs&&typeof refs==='object'&&!Array.isArray(refs)&&Object.keys(refs).length<=4&&Object.values(refs).every(id=>/^[a-f0-9]{64}$/.test(id)))&&Array.isArray(item.stickerChoices)&&item.stickerChoices.length<=3&&JSON.stringify(item).length<=100000;
+}
 
 /** Small persistent recent-message buffer. Corrupt files fail closed and are never overwritten. */
 export class MessageBuffer {
@@ -30,6 +36,7 @@ export class MessageBuffer {
     this.pendingReplies=new Map();
     this.mediaReplies=new Map();
     this.contextNotices=new Map();
+    this.pendingRequests=new Map();
     if (fs.existsSync(file)) {
       const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
       if (saved.version !== 1 || !saved.chats || typeof saved.chats !== 'object') throw new Error('invalid message buffer');
@@ -40,7 +47,7 @@ export class MessageBuffer {
       for(const [key,item] of Object.entries(saved.pendingReplies??{})){
         if(!item||!/^[a-f0-9]{64}$/.test(item.deliveryId??'')||typeof item.throughId!=='string'||
           !['RESPOND','STICKER'].includes(item.result?.decision)||
-          item.result.decision==='RESPOND'&&(typeof item.result.text!=='string'||!item.result.text.trim()||item.result.text.length>1200)||
+          item.result.decision==='RESPOND'&&(typeof item.result.text!=='string'||!item.result.text.trim()||item.result.text.length>(item.message?.work_mode==='assistant'?12000:1200))||
           item.result.textParts!==undefined&&(!Array.isArray(item.result.textParts)||item.result.textParts.length!==2||item.result.textParts.some(part=>typeof part!=='string'||!part.trim())||item.result.textParts.join('\n\n')!==item.result.text)||
           item.result.decision==='STICKER'&&!/^[a-f0-9]{64}$/.test(item.result.stickerId??'')||!item.message||
           item.result.stickerId!==undefined&&!/^[a-f0-9]{64}$/.test(item.result.stickerId)||!validReplyParts(item)||
@@ -50,6 +57,10 @@ export class MessageBuffer {
       for(const [key,item] of Object.entries(saved.contextNotices??{})){
         if(!item||typeof item.id!=='string'||typeof item.text!=='string'||item.text.length>1000)throw Error('invalid context notice');
         this.contextNotices.set(key,item);
+      }
+      for(const [key,item]of Object.entries(saved.pendingRequests??{})){
+        if(!this.chats.has(key)||!validPendingRequest(item))throw Error('invalid pending model request');
+        this.pendingRequests.set(key,item);
       }
       for(const [id,item] of Object.entries(saved.mediaReplies??{})){
         if(!/^[a-f0-9]{64}$/.test(id)||item?.part?.deliveryId!==id||!/^[a-f0-9]{64}$/.test(item.part.stickerId??'')||
@@ -71,9 +82,11 @@ export class MessageBuffer {
       conversation_name: String(message.conversation_name ?? message.conversation_id),
       sender_name: String(message.sender_name ?? ''), message_id: String(message.message_id ?? ''),
       ...(!outgoing&&message.kind==='group'&&/^[a-f0-9]{64}$/.test(message.sender_key??'')?{sender_key:message.sender_key}:{}),
-      self_id:String(message.self_id??''),
+      ...(typeof message.sender_wxid==='string'?{sender_wxid:message.sender_wxid}:{}),
+      self_id:String(message.self_id??''),...(message.work_mode?{work_mode:message.work_mode}:{}),
       text: String(message.text ?? '').slice(0, 4000), timestamp: Number(message.timestamp) || Date.now() / 1000,
       images: outgoing ? [] : (message.images ?? []).filter(image => /^[a-f0-9]{64}$/.test(image?.id ?? '')).slice(0,4),
+      files:outgoing?[]:(message.files??[]).filter(file=>/^[a-f0-9]{64}$/.test(file?.id??'')&&typeof file.name==='string'&&file.name.length<=180&&Number.isSafeInteger(file.size)&&file.size>=0&&file.size<=50*1024*1024).slice(0,3),
       direct_mention: Boolean(message.direct_mention), outgoing, processed: outgoing };
     if(!outgoing && message.interaction==='pat')row.interaction='pat';
     const record=!outgoing && normalizeForwardedRecord(message.forwardedRecord);
@@ -96,11 +109,14 @@ export class MessageBuffer {
   }
   rememberReply(key,item){
     const message=item.message;
+    this.pendingRequests.delete(key);
     this.pendingReplies.set(key,{...item,message:{platform:message.platform,kind:message.kind,conversation_id:String(message.conversation_id),
-      conversation_name:String(message.conversation_name??''),self_id:String(message.self_id??''),sender_id:String(message.sender_id??''),sender_name:String(message.sender_name??'')}});
+      conversation_name:String(message.conversation_name??''),self_id:String(message.self_id??''),sender_id:String(message.sender_id??''),sender_name:String(message.sender_name??''),...(message.work_mode?{work_mode:message.work_mode}:{})}});
     this.#save();
   }
   forgetReply(key){this.pendingReplies.delete(key);this.#save();}
+  rememberRequest(key,item){if(!validPendingRequest(item))throw Error('invalid pending model request');this.pendingRequests.set(key,structuredClone(item));this.#save();}
+  forgetRequest(key){this.pendingRequests.delete(key);this.#save();}
   saveMedia(){this.#save();}
   setContextNotice(key,item){this.contextNotices.set(key,item);this.#save();}
   recordReplyPart(key,item,outgoing){
@@ -113,7 +129,7 @@ export class MessageBuffer {
       rows.push({id:crypto.randomUUID(),platform:outgoing.platform,kind:outgoing.kind,conversation_id:String(outgoing.conversation_id),
         conversation_name:String(outgoing.conversation_name??''),sender_id:String(outgoing.sender_id??''),sender_name:'AI',
         message_id:'out-'+item.deliveryId,text:String(outgoing.text).slice(0,4000),timestamp:outgoing.timestamp,
-        images:[],direct_mention:false,outgoing:true,processed:true,delivery_id:item.deliveryId,delivery_status:outgoing.delivery_status,proactive:outgoing.proactive===true,
+        images:[],direct_mention:false,outgoing:true,processed:true,delivery_id:item.deliveryId,delivery_status:outgoing.delivery_status,proactive:outgoing.proactive===true,...(outgoing.work_mode?{work_mode:outgoing.work_mode}:{}),
         ...(/^[a-f0-9]{64}$/.test(outgoing.sticker_id??'')?{sticker_id:outgoing.sticker_id}:{})});
     }
     if(rows.length>this.maxPerChat)rows.splice(0,rows.length-this.maxPerChat);
@@ -122,7 +138,7 @@ export class MessageBuffer {
   completeReply(key,item,outgoing){
     if(outgoing)this.recordReplyPart(key,item,outgoing);
     const rows=this.chats.get(key)??[];
-    if(rows.some(row=>row.id===item.throughId))for(const row of rows){row.processed=true;if(row.id===item.throughId)break;}
+    const through=rows.find(row=>row.id===item.throughId);if(through)for(const row of rows){if((row.work_mode??'social')===(through.work_mode??'social'))row.processed=true;if(row.id===item.throughId)break;}
     if(rows.length>this.maxPerChat)rows.splice(0,rows.length-this.maxPerChat);
     this.chats.set(key,rows);this.pendingReplies.delete(key);
     if(item.noticeId&&this.contextNotices.get(key)?.id===item.noticeId)this.contextNotices.delete(key);
@@ -135,11 +151,13 @@ export class MessageBuffer {
   markProcessed(key, throughId = null, noticeId = null) {
     const rows = this.chats.get(key) ?? [];
     if (throughId && !rows.some((row) => row.id === throughId)) return;
+    const through=throughId?rows.find(row=>row.id===throughId):null;
     for (const row of rows) {
-      row.processed = true;
+      if(!through||(row.work_mode??'social')===(through.work_mode??'social'))row.processed = true;
       if (throughId && row.id === throughId) break;
     }
     if(noticeId&&this.contextNotices.get(key)?.id===noticeId)this.contextNotices.delete(key);
+    this.pendingRequests.delete(key);
     this.#save();
   }
 
@@ -147,7 +165,7 @@ export class MessageBuffer {
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
     const chats = Object.fromEntries(this.chats);
     const temp = `${this.file}.${process.pid}.tmp`;
-    fs.writeFileSync(temp, JSON.stringify({ version: 1, chats,pendingReplies:Object.fromEntries(this.pendingReplies),mediaReplies:Object.fromEntries(this.mediaReplies),contextNotices:Object.fromEntries(this.contextNotices) }), { mode: 0o600 });
+    fs.writeFileSync(temp, JSON.stringify({ version: 1, chats,pendingReplies:Object.fromEntries(this.pendingReplies),mediaReplies:Object.fromEntries(this.mediaReplies),contextNotices:Object.fromEntries(this.contextNotices),pendingRequests:Object.fromEntries(this.pendingRequests) }), { mode: 0o600 });
     fs.renameSync(temp, this.file);
   }
 }

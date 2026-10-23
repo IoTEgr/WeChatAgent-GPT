@@ -6,7 +6,7 @@ const { projectDirectory, safeNavigation, externalWebUrl, windowPlacement } = re
 const { bootstrapDeployment } = require('./deployment.cjs');
 const { createAppearanceStore, strengthOf } = require('./appearance.cjs');
 const {createShutdownController}=require('./shutdown.cjs');
-const {resolveStorageLocation,migrationPlan,prepareDataHome,rebindExternalDsh,stopLegacyServices}=require('./storage-location.cjs');
+const {resolveStorageLocation,migrationPlan,retainDsh,deploymentStorageOptions,prepareDataHome,rebindExternalDsh,stopLegacyServices}=require('./storage-location.cjs');
 
 app.setName('WeChatAgent');
 app.setAppUserModelId('local.wechatagent.desktop');
@@ -69,14 +69,21 @@ else {
       loadingWindow.setMenu(null);
       await loadingWindow.loadFile(path.join(__dirname,'loading.html'));
       const progress=message=>{if(!loadingWindow.isDestroyed())loadingWindow.webContents.send('deployment:progress',message);};
-      const plan=migrationPlan(storage);
+      let plan=migrationPlan(storage);
       if(plan.needed){
-        const answer=dialog.showMessageBoxSync(loadingWindow,{type:'question',title:'迁移旧版数据',message:'发现已有的 WeChatAgent 数据',detail:'从：'+plan.source+'\n到：'+plan.dataHome+'\n\n会停止旧实例管理的后台服务，再复制并校验配置、人设、表情包和会话状态，保留旧副本。请先退出旧版窗口、匹配微信和 DSH。',buttons:['停止旧服务并迁移','暂不启动'],defaultId:0,cancelId:1});
-        if(answer!==0){quitting=true;app.quit();return;}
+        const answer=dialog.showMessageBoxSync(loadingWindow,{type:'question',title:'迁移旧版数据',message:'发现已有的 WeChatAgent 数据',detail:'从：'+plan.source+'\n到：'+plan.dataHome+'\n\n会停止旧实例管理的后台服务，再复制并校验配置、人设、表情包和会话状态，保留旧副本。请先退出旧版窗口和匹配微信。\n\n选择“保留旧 DSH”会跳过 DSH 数据迁移，保留其原位置、会话、附件和配置并继续启动；启动后需在 DSH 中手动重新添加新版插件目录。选择完整迁移时，请先从托盘退出 DSH。',buttons:['停止旧服务并迁移','保留旧 DSH','暂不启动'],defaultId:1,cancelId:2});
+        if(answer!==0&&answer!==1){quitting=true;app.quit();return;}
+        if(answer===1)plan=retainDsh(plan);
         progress('正在停止旧实例管理的后台服务…');await stopLegacyServices(plan,process.resourcesPath);
       }
-      const migrated=await prepareDataHome(plan,{progress});
-      deployment = await bootstrapDeployment(process.resourcesPath, deploymentHome, progress, {dshHome:migrated.report?.source?path.join(deploymentHome,'dsh'):undefined,externalDshHome:migrated.report?.managedDsh===false?migrated.report.oldDshHome:undefined});
+      let migrated;
+      try{migrated=await prepareDataHome(plan,{progress});}catch(error){
+        if(error.code!=='DSH_EXTERNAL_LINK'||plan.dshRetained)throw error;
+        const answer=dialog.showMessageBoxSync(loadingWindow,{type:'warning',title:'保留旧 DSH 数据',message:'旧 DSH 包含外部链接，无法自动迁移',detail:error.message+'\n\n可保留旧 DSH 原位置，仅迁移 WeChatAgent 的数据并继续启动。不会复制、删除或修改旧 DSH 数据；启动后需手动重新添加新版插件目录。',buttons:['保留旧 DSH 并继续','暂不启动'],defaultId:0,cancelId:1});
+        if(answer!==0){quitting=true;app.quit();return;}
+        plan=retainDsh(plan);migrated=await prepareDataHome(plan,{progress});
+      }
+      deployment = await bootstrapDeployment(process.resourcesPath, deploymentHome, progress, deploymentStorageOptions(migrated.report,deploymentHome));
       await rebindExternalDsh(migrated.report,root,deploymentHome);
       try{preferences=fs.existsSync(preferenceFile)?JSON.parse(fs.readFileSync(preferenceFile,'utf8')):{};}catch{preferences={};}
     }

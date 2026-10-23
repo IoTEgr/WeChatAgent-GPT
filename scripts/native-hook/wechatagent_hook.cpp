@@ -16,6 +16,7 @@
 #include "json.hpp"
 #include "wx_send.h"
 #include "sticker_sender.h"
+#include "file_sender.h"
 #include "global.h"
 #include "wechatagent_hook.h"
 #include "deferred_init.h"
@@ -49,6 +50,22 @@ static bool StickerReady() {
     return true;
 }
 
+static bool SendFileGuarded(const std::string& target,const std::string& path) {
+    __try { return WeChatAgentFile::Send(target,path); }
+    __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+static bool FileDigestMatches(const std::filesystem::path& path,const std::string& md5) {
+    std::ifstream input(path,std::ios::binary);if(!input)return false;
+    BCRYPT_ALG_HANDLE algorithm=nullptr;BCRYPT_HASH_HANDLE hash=nullptr;
+    if(BCryptOpenAlgorithmProvider(&algorithm,BCRYPT_MD5_ALGORITHM,nullptr,0)<0)return false;
+    DWORD size=0,written=0;bool valid=BCryptGetProperty(algorithm,BCRYPT_OBJECT_LENGTH,reinterpret_cast<PUCHAR>(&size),sizeof(size),&written,0)>=0;
+    std::vector<unsigned char> object(size),buffer(65536);unsigned char result[16]{};uint64_t total=0;
+    if(valid)valid=BCryptCreateHash(algorithm,&hash,object.data(),size,nullptr,0,0)>=0;
+    while(valid&&input){input.read(reinterpret_cast<char*>(buffer.data()),buffer.size());const auto count=input.gcount();if(count>0){total+=count;if(total>50*1024*1024){valid=false;break;}valid=BCryptHashData(hash,buffer.data(),static_cast<ULONG>(count),0)>=0;}}
+    if(input.bad())valid=false;if(valid)valid=BCryptFinishHash(hash,result,sizeof(result),0)>=0;
+    if(hash)BCryptDestroyHash(hash);BCryptCloseAlgorithmProvider(algorithm,0);if(!valid)return false;
+    const char* hex="0123456789abcdef";std::string actual;for(auto byte:result){actual+=hex[byte>>4];actual+=hex[byte&15];}return actual==md5;
+}
 static bool ForwardSticker(const std::string& target,const std::string& path) {
     __try { return WeixinSend::SendStickerFile(target,path); }
     __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
@@ -149,6 +166,7 @@ static std::set<std::string> DatabaseAccounts() {
 }
 
 void RegisterWeChatAgentRoutes(httplib::Server& server) {
+    WeChatAgentInitStage("http_token_read");
     std::ifstream file(std::filesystem::path(ModulePath()).parent_path() / L"wechatagent-hook.token");
     std::string token;
     std::getline(file, token);
@@ -164,11 +182,12 @@ void RegisterWeChatAgentRoutes(httplib::Server& server) {
         }
         return true;
     };
+    WeChatAgentInitStage("http_routes_register");
     server.Get("/WeChatAgent/health", [authorized](const httplib::Request& req, httplib::Response& res) {
         if (!authorized(req, res)) return;
         json data = {{"backend", "wechat-hook"}, {"integration", "WeChatAgent-1"},
-            {"version", CoreVersion()}, {"pid", GetCurrentProcessId()}, {"databaseAccounts", DatabaseAccounts()}, {"nativeStickerSend",StickerReady()},
-            {"initialization", "deferred-module-v1"}, {"startupState", WeChatAgentInitState()}};
+            {"version", CoreVersion()}, {"pid", GetCurrentProcessId()}, {"databaseAccounts", DatabaseAccounts()}, {"nativeStickerSend",StickerReady()}, {"nativeFileSend",CoreVersion()=="4.1.10.27"&&WeChatAgentFile::Ready()},
+            {"initialization", "deferred-module-v3"}, {"startupState", WeChatAgentInitState()}};
         res.set_content(data.dump(), "application/json");
     });
     server.Post("/SendStickerMsg",[authorized](const httplib::Request& req,httplib::Response& res){
@@ -218,6 +237,20 @@ void RegisterWeChatAgentRoutes(httplib::Server& server) {
     server.Get("/WeChatAgent/sticker-trace",[authorized](const httplib::Request& req,httplib::Response& res){
         if(!authorized(req,res))return;
         res.set_content(WeChatAgentSticker::TraceJson(),"application/json");
+    });
+    server.Post("/SendFileMsg",[authorized](const httplib::Request& req,httplib::Response& res){
+        if(!authorized(req,res))return;
+        try{
+            auto accounts=DatabaseAccounts();auto account=req.get_header_value("X-WeChatAgent-Account");
+            if(CoreVersion()!="4.1.10.27"||accounts.size()!=1||!accounts.count(account)||!WeChatAgentFile::Ready()){res.status=409;res.set_content("{\"ret\":1,\"error\":\"File sender unavailable\"}","application/json");return;}
+            auto data=json::parse(req.body);const auto target=data.value("wxidorgid",""),file=data.value("path",""),md5=data.value("md5","");const auto size=data.value("size",static_cast<uint64_t>(-1));
+            if(target.empty()||target.size()>256||file.empty()||file.size()>4096||size>50*1024*1024||!std::regex_match(md5,std::regex("[a-f0-9]{32}"))){res.status=400;res.set_content("{\"ret\":1}","application/json");return;}
+            const auto allowed=std::filesystem::weakly_canonical(std::filesystem::path(ModulePath()).parent_path().parent_path().parent_path().parent_path()/L"state"/L"files"/L"outgoing");
+            const auto local=std::filesystem::weakly_canonical(std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(file.data()),file.size())));
+            if(local.parent_path().parent_path()!=allowed||!std::regex_match(local.parent_path().filename().string(),std::regex("[a-f0-9]{64}"))||!std::filesystem::is_regular_file(local)||std::filesystem::file_size(local)!=size||!FileDigestMatches(local,md5)){res.status=400;res.set_content("{\"ret\":1}","application/json");return;}
+            std::unique_lock<std::timed_mutex> lock(sendMutex,std::defer_lock);if(!lock.try_lock_for(std::chrono::seconds(1))){res.status=429;res.set_content("{\"ret\":1}","application/json");return;}
+            const bool accepted=SendFileGuarded(target,file);res.set_content(accepted?"{\"ret\":0,\"retmsg\":\"accepted\"}":"{\"ret\":1,\"error\":\"Native file rejected\"}","application/json");
+        }catch(...){res.status=400;res.set_content("{\"ret\":1,\"error\":\"Invalid file request\"}","application/json");}
     });
     server.Post("/SendTextMsg", [authorized](const httplib::Request& req, httplib::Response& res) {
         if (!authorized(req, res)) return;

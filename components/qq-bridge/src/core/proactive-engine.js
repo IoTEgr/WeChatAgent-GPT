@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import {conversationWorkMode} from '../../../../packages/dsh-social-bridge-plugin/conversation-policy.mjs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {buildConversationKey,parseConversationKey} from './conversation-key.js';
@@ -67,6 +68,7 @@ export class ProactiveEngine {
       const settings=await this.settingsFor(),wechat=settings.wechat??settings;
       const keys=['private','group'].flatMap(kind=>(wechat.whitelist?.[kind==='private'?'private':'groups']??[]).map(id=>buildConversationKey('wechat',kind,String(id))));
       for(const key of keys){
+        if(conversationWorkMode(wechat,key)==='assistant')continue;
         const policy=proactivePolicy(wechat,key);
         let item=this.state.chats[key];const now=this.now(),signature=proactivePolicyKey(policy);
         if(this.finishRecorded(key,item))continue;

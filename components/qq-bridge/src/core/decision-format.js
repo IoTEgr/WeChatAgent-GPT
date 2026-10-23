@@ -52,7 +52,7 @@ function shortStickerDecision(text, stickerRefs) {
     : { decision: 'INVALID', text: '' };
 }
 
-export function parseSocialDecision(output, stickerRefs = {}, {allowStickerCaption=false,allowTextParts=true} = {}) {
+export function parseSocialDecision(output, stickerRefs = {}, {allowStickerCaption=false,allowTextParts=true,maxChars=1200} = {}) {
   const text = String(output ?? '').trim().replace(/^```(?:text|plaintext)?\s*\n([\s\S]*?)\n```$/i, '$1').trim();
   if (hasReasoningControl(text)) return { decision: 'INVALID', text: '' };
   if (/^\[?SILENT\]?$/i.test(text)) return { decision: 'SILENT', text: '' };
@@ -67,7 +67,7 @@ export function parseSocialDecision(output, stickerRefs = {}, {allowStickerCapti
   if (hasReasoningControl(reply)) return { decision: 'INVALID', text: '' };
   if (hasReplyProtocolControl(reply)) return { decision: 'INVALID', text: '' };
   const response=value=>{
-    const text=value.trim().slice(0,1200);
+    const text=value.trim().slice(0,Math.min(12000,Math.max(1200,maxChars)));
     if(hasReplyProtocolControl(text))return {decision:'INVALID',text:''};
     // Keep a code example within its quoting boundary in one message.
     const paragraphs=allowTextParts&&!/^\s*(?:`{3,}|~{3,})/m.test(text)?text.split(/\r?\n[ \t]*\r?\n(?:[ \t]*\r?\n)*/).map(part=>part.trim()).filter(Boolean):[];
@@ -92,9 +92,9 @@ export function parseSocialDecision(output, stickerRefs = {}, {allowStickerCapti
   return response(reply);
 }
 
-export async function resolveSocialDecision({ rawOutput, key, metadata, decide, stickerRefs = {}, allowStickerCaption=false, allowTextParts=true, log = () => {} }) {
+export async function resolveSocialDecision({ rawOutput, key, metadata, decide, stickerRefs = {}, allowStickerCaption=false, allowTextParts=true, maxChars=1200, log = () => {} }) {
   let output = splitStickerLabels(rawOutput);
-  let result = parseSocialDecision(output.text, stickerRefs, {allowStickerCaption,allowTextParts});
+  let result = parseSocialDecision(output.text, stickerRefs, {allowStickerCaption,allowTextParts,maxChars});
   if (result.decision !== 'INVALID') return { output, result };
   log(`[Social] ${key} format_repair reason=${output.text.trim() ? 'invalid' : 'empty'}`);
   const repairMetadata = { ...metadata };
@@ -111,6 +111,6 @@ export async function resolveSocialDecision({ rawOutput, key, metadata, decide, 
     (choices.length ? `如需原生表情，仅可输出 RESPOND: [STICKER:S编号]，本轮允许 ${choices.join('、')}；不能使用其他编号。\n` : '本次仅允许文字回复或沉默，不使用历史表情编号。\n') +
     SOCIAL_OUTPUT_NOTICE;
   output = splitStickerLabels(await decide(key, prompt, repairMetadata));
-  result = parseSocialDecision(output.text, stickerRefs, {allowStickerCaption,allowTextParts});
+  result = parseSocialDecision(output.text, stickerRefs, {allowStickerCaption,allowTextParts,maxChars});
   return { output, result };
 }

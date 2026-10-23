@@ -6,9 +6,11 @@
 #include "wechatagent_hook.h"
 // This synthetic HTTP host does not install WeChat hooks or run DllMain.
 const char* WeChatAgentInitState() { return "ready"; }
+void WeChatAgentInitStage(const char*) noexcept {}
 namespace WeixinSend { void SendText(const std::string&, const std::string&) { ExitProcess(9); } }
 namespace WeixinSend { bool SendStickerFile(const std::string&,const std::string&) { ExitProcess(9);return false; } }
 namespace WeixinSendXML { void Initialize() {} bool ForwardXmlMessage(const std::string&,const std::string&) { ExitProcess(9);return false; } }
+namespace WeChatAgentFile { bool Ready(){return false;} bool Send(const std::string&,const std::string&){ExitProcess(9);return false;} }
 namespace WeChatAgentSticker { bool StartTrace(const std::string&) {ExitProcess(9);return false;} std::string TraceJson(){return "{}";} }
 int wmain(int argc, wchar_t** argv) {
     if (argc != 2) return 2;

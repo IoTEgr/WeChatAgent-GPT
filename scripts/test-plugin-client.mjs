@@ -73,6 +73,12 @@ test('safe lowercase lifecycle error codes are preserved for diagnosis',async t=
     await assert.rejects(f.client.followup('wechat:private:123','fixture'),error=>error.message.includes(`(${detail})`));
   }
 });
+test('only an explicit authenticated admission receipt marks a failed batch as consumed',async t=>{
+  for(const admitted of [true,false,undefined,'true']){
+    const f=await fixture(t,[{status:502,body:{error:'turn_failed',admitted}}]);
+    await assert.rejects(f.client.followup('wechat:private:123','fixture'),error=>error.admitted===(admitted===true));
+  }
+});
 
 test('a rejected vision turn falls back once without repeating search tools and later chat text advances',async t=>{
   const f=await fixture(t,[{status:502,body:{error:'turn_failed',code:'INVALID_REQUEST'}},{status:200,body:{text:'RESPOND: 仍可文字聊天'}}]);

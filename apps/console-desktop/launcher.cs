@@ -6,9 +6,9 @@ using System.Windows.Forms;
 [assembly: AssemblyTitle("WeChatAgent")]
 [assembly: AssemblyDescription("WeChatAgent desktop application")]
 [assembly: AssemblyProduct("WeChatAgent")]
-[assembly: AssemblyVersion("0.3.9.0")]
-[assembly: AssemblyFileVersion("0.3.9.0")]
-[assembly: AssemblyInformationalVersion("0.3.9")]
+[assembly: AssemblyVersion("0.4.0.0")]
+[assembly: AssemblyFileVersion("0.4.0.0")]
+[assembly: AssemblyInformationalVersion("0.4.0")]
 
 internal static class Launcher {
     [STAThread]

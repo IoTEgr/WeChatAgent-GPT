@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { PAT_TYPE, FORWARD_TYPE, QUOTE_TYPE, normalizeForwardedRecord, normalizeQuoteReply } from '../components/qq-bridge/src/core/wechat-events.js';
 import { stickerPolicy, cleanStickerLabel } from '../components/qq-bridge/src/core/sticker-policy.js';
+import {FileDeliveryWorker} from './file-delivery-worker.mjs';
 import { TextDeliveryStore } from './text-delivery-store.mjs';
 import {hookAccountProblem} from './wechat-account-check.mjs';
 import {proactivePolicy,withinProactiveWindow,conversationSnapshot,declinedProactive} from '../components/qq-bridge/src/core/proactive-policy.js';
@@ -75,7 +76,7 @@ export class HookOneBot {
       if(state.version!==1 || !Array.isArray(state.attempts))fail('STICKER_DELIVERY_STATE_INVALID');
       for(const [key,attempt] of state.attempts)this.stickerPending.set(key,{...attempt,baseline:new Set(attempt.baseline)});
     }
-    this.activeActions = 0;
+    this.activeActions = 0;this.fileWorker=new FileDeliveryWorker(this,{log:line=>console.log(new Date().toISOString(),line)});
     this.status = { backend: 'wechat-hook', project:'WeChatAgent',component:'adapter',statusVersion:1,pid:process.pid,projectRoot:path.resolve(directory),ready:false,ob_connected: false, reader_connected: false,
       hook_connected: false, hook_account_verified: false, received: 0, confirmed_sends: 0,
       failed_sends: 0, last_error: '', version: '' };
@@ -119,7 +120,7 @@ export class HookOneBot {
     this.startupStage='hook-health';
     const native = await this.native('/WeChatAgent/health').catch(error=>{throw healthError(error,'HOOK','hook-health',this.hook.baseUrl);});
     if(!native || typeof native!=='object')fail('HOOK_HEALTH_INVALID_RESPONSE');
-    this.status.native_sticker_send = native.nativeStickerSend===true;
+    this.status.native_sticker_send = native.nativeStickerSend===true;this.status.native_file_send=native.nativeFileSend===true;this.status.fileTransfer='durable-outbox-v1';
     this.status.hook_connected = true; this.status.version = native.version ?? '';
     const accountProblem=hookAccountProblem(native,reader.accountDirectory,this.hook.expectedVersion);
     if(accountProblem)fail(accountProblem);
@@ -400,15 +401,17 @@ export class HookOneBot {
   }
   incoming(payload) {
     this.reload();
-    if (payload?.event !== 'message.new' || ![1,3,47,PAT_TYPE,49,FORWARD_TYPE,QUOTE_TYPE].includes(payload.type) || typeof payload.content !== 'string' || !payload.content.trim() || !payload.sessionId || !payload.talkerId || payload.isSend || payload.talkerId === this.ownWxid) return null;
+    if (payload?.event !== 'message.new' || ![1,3,47,PAT_TYPE,49,FORWARD_TYPE,QUOTE_TYPE,25769803825].includes(payload.type) || typeof payload.content !== 'string' || !payload.content.trim() || !payload.sessionId || !payload.talkerId || payload.isSend || payload.talkerId === this.ownWxid) return null;
     const forwardedRecord=[49,FORWARD_TYPE].includes(payload.type)?normalizeForwardedRecord(payload.forwardedRecord):null;
     const quoteReply=[49,QUOTE_TYPE].includes(payload.type)?normalizeQuoteReply(payload.quoteReply):null;
     if([49,FORWARD_TYPE,QUOTE_TYPE].includes(payload.type) && (!forwardedRecord && !quoteReply || forwardedRecord && quoteReply))return null;
     if ([3,47].includes(payload.type) && !/^[a-f0-9]{64}$/.test(payload.image?.id ?? '')) return null;
+    if(payload.type===25769803825&&(!/^[a-f0-9]{64}$/.test(payload.file?.id??'')||typeof payload.file?.name!=='string'||!Number.isSafeInteger(payload.file?.size)||payload.file.size<0||payload.file.size>50*1024*1024))return null;
     if (payload.type === PAT_TYPE && (!this.ownWxid || payload.pat?.target !== cleanAccountId(this.ownWxid) || payload.pat?.actor !== payload.talkerId || payload.pat.actor === cleanAccountId(this.ownWxid))) return null;
     const group = payload.sessionId.includes('@chatroom'), kind = group ? 'group' : 'private';
     const target = conversationId(payload.sessionId, payload.groupName, payload.conversationId);
     if (!this.allowed(kind, target)) return null;
+    if(!group && payload.talkerId!==payload.sessionId)return null;
     const selfId = onebotId(this.ownWxid), userId = onebotId(group ? payload.talkerId : payload.sessionId);
     if(quoteReply){
       const ref=quoteReply.reference;
@@ -418,13 +421,14 @@ export class HookOneBot {
     }
     const content=quoteReply?(quoteReply.reply||'[引用回复，正文为空]'):payload.content;
     const segments = [{ type: 'text', data: { text: content } }];
+    if(payload.type===25769803825)segments.push({type:'file',data:{id:payload.file.id,name:payload.file.name,size:payload.file.size}});
     if ([3,47].includes(payload.type)) segments.push({type:'image',data:{file:'wechatagent://image/'+payload.image.id,media_id:payload.image.id,...(payload.type===47?{media_kind:'sticker'}:{})}});
     if (group && this.project.account.nicknames.some(n => content.includes('@' + n + '\u2005') || content.endsWith('@' + n))) segments.unshift({ type: 'at', data: { qq: String(selfId) } });
     return { time: payload.timestamp || Math.floor(Date.now() / 1000), self_id: selfId, post_type: 'message',
       message_type: kind, sub_type: group ? 'normal' : 'friend', message_id: payload.rawid,
       user_id: userId, message: segments, raw_message: content,
       sender: { user_id: userId, nickname: payload.sourceName || payload.senderName || String(userId) },
-      ...(group||payload.type===PAT_TYPE||forwardedRecord||quoteReply?{wechatagent:{...(group?{memberId:crypto.createHash('sha256').update('wechat-member:'+payload.talkerId).digest('hex')}:{}),...(payload.type===PAT_TYPE?{interaction:'pat'}:forwardedRecord?{forwardedRecord}:quoteReply?{quoteReply}:{})}}:{}),
+      ...({wechatagent:{senderWxid:payload.talkerId,...(group?{memberId:crypto.createHash('sha256').update('wechat-member:'+payload.talkerId).digest('hex')}:{}),...(payload.type===PAT_TYPE?{interaction:'pat'}:forwardedRecord?{forwardedRecord}:quoteReply?{quoteReply}:{})}}),
       ...(group ? { group_id: target, group_name: payload.groupName || String(target) } : {}) };
   }
   enqueue(payload) {
@@ -515,6 +519,7 @@ export class HookOneBot {
     catch(error){const code=systemErrorCode(error);throw startupError(code==='EADDRINUSE'?'ADAPTER_PORT_IN_USE':['EACCES','EPERM'].includes(code)?'ADAPTER_PORT_DENIED':'ADAPTER_LISTEN_FAILED',error,'adapter-port-bind',this.project.ports.adapter);}
     this.status.ready=true;
     this.tasks = [this.connectOneBot(), this.receiveSse()];
+    this.fileTimer=setInterval(()=>{try{this.fileWorker.tick();}catch{}},1000);this.fileTimer.unref();
     let checking = false;
     this.healthTimer = setInterval(async () => {
       if (checking || this.stopped) return;
@@ -527,7 +532,7 @@ export class HookOneBot {
   }
   async stop() {
     this.stopped = true;this.status.ready=false; for (const controller of this.controllers) controller.abort();
-    clearInterval(this.healthTimer);
+    clearInterval(this.healthTimer);clearInterval(this.fileTimer);this.fileWorker.stop();
     this.socket?.close();
     if (this.server) await new Promise(resolve => this.server.close(resolve));
     await Promise.allSettled(this.tasks ?? []);

@@ -76,7 +76,7 @@ async function fixture(t) {
   fs.copyFileSync('packages/dsh-social-bridge-plugin/image-input.mjs',path.join(pluginDir,'image-input.mjs'));
   fs.copyFileSync('packages/dsh-social-bridge-plugin/deadline.mjs',path.join(pluginDir,'deadline.mjs'));
   fs.copyFileSync('packages/dsh-social-bridge-plugin/local-policy.mjs',path.join(pluginDir,'local-policy.mjs'));
-  for(const name of ['session-groups.mjs','prompt-context.mjs','member-memory.mjs','member-memory-policy.mjs','meme-library.mjs','meme-library-policy.mjs','model-search.mjs','dsh-access.mjs','conversation-policy.mjs','dsh-bundled.mjs','sticker-pool-review.mjs','dsh-migration.mjs','dsh-search.mjs','search-provider.mjs','search-budget.mjs','search-policy.mjs','weather-query.mjs','weather-source.mjs','social-tool-policy.mjs','context-policy.mjs'])fs.copyFileSync('packages/dsh-social-bridge-plugin/'+name,path.join(pluginDir,name));
+  for(const name of ['assistant-notifications.mjs','assistant-tasks.mjs','assistant-control.mjs','social-tool-restrict.mjs','plugin-catalog.mjs','work-modes.mjs','session-groups.mjs','prompt-context.mjs','member-memory.mjs','member-memory-policy.mjs','meme-library.mjs','meme-library-policy.mjs','model-search.mjs','dsh-access.mjs','file-tools.mjs','file-transfers.mjs','assistant-policy.mjs','conversation-policy.mjs','dsh-bundled.mjs','sticker-pool-review.mjs','dsh-migration.mjs','dsh-search.mjs','search-provider.mjs','search-budget.mjs','search-policy.mjs','weather-query.mjs','weather-source.mjs','social-tool-policy.mjs','context-policy.mjs'])fs.copyFileSync('packages/dsh-social-bridge-plugin/'+name,path.join(pluginDir,name));
   for(const name of ['web-reader.mjs','web-reader-policy.mjs','web-reader-fetch.mjs','web-reader-content.mjs','web-reader-zxsj.mjs'])fs.copyFileSync('packages/dsh-social-bridge-plugin/'+name,path.join(pluginDir,name));
   fs.cpSync('packages/dsh-social-bridge-plugin/skills',path.join(pluginDir,'skills'),{recursive:true});
   for(const name of ['htmlparser2','entities','domhandler','domutils','dom-serializer','domelementtype'])fs.cpSync('packages/dsh-social-bridge-plugin/node_modules/'+name,path.join(dir,'node_modules',name),{recursive:true});
@@ -169,7 +169,7 @@ async function fixture(t) {
       const result=await response.json();assert.equal(response.status,expectedStatus,JSON.stringify(result));return result;
     };
     for(let i=0;i<50;i++){try{await request('/health');break;}catch{await new Promise(r=>setTimeout(r,10));}}
-    let stopped=false;const runtime={request,calls,agents,compact,ctx,stop:async()=>{if(!stopped){stopped=true;await disposer();}}};servers.push(runtime);return runtime;
+    let stopped=false;const runtime={request,url:`http://127.0.0.1:${port}`,calls,agents,compact,ctx,stop:async()=>{if(!stopped){stopped=true;await disposer();}}};servers.push(runtime);return runtime;
   }
   const setPersona=(key,name,text)=>{const file=path.join(dir,'state/bridge-config.json');const config=JSON.parse(fs.readFileSync(file,'utf8'));config.roles[key]={name,persona:text};fs.writeFileSync(file,JSON.stringify(config));};
   return {start,store,statePath,dir,archived,setPersona};
@@ -299,7 +299,8 @@ test('delivery collects only the final assistant message, excluding reasoning an
   saved.profiles[key].cache[batchId].output.text='RESPOND: legacy commentary';
   fs.writeFileSync(f.statePath,JSON.stringify(saved));
   const restored=await f.start({assistantMessages:[[{type:'text',text:'RESPOND: 安全的新回复'}]]});
-  assert.equal((await restored.request('/followup',body)).text,'RESPOND: 安全的新回复');
+  assert.equal((await restored.request('/followup',body)).text,'RESPOND: 最终回复');
+  assert.equal(restored.calls.model.length,0,'A legacy cache is rebuilt from the final native message, without repeating the input');
 });
 
 test('account changes block the old DSH plugin and keep identical chat IDs in separate sessions', async t => {
@@ -430,6 +431,34 @@ test('Bridge custom persona metadata matches the locked snapshot and reaches the
   await r.request('/followup',{conversationKey:key,...metadata,message:'新消息'});
   assert.equal(r.calls.model.length,1);assert.match(r.calls.model[0],/单独的人格正文/);
   assert.deepEqual(socialPersona(config,'wechat:group:other',()=>{}),{persona,personaName:'测试人格'});
+});
+
+test('a disconnected caller cannot cancel and duplicate an already admitted batch',async t=>{
+  const f=await fixture(t);let release;const gate=new Promise(resolve=>{release=resolve;});t.after(()=>release());
+  const r=await f.start({contextTokens:1,beforeAssistant:()=>gate,turnTimeoutMs:1000}),configured=await r.request('/configure',info),session=f.store.get(configured.sessionId),controller=new AbortController();
+  const body={...info,message:'断线重投只接收一次',batchId:'8'.repeat(64)},request=fetch(r.url+'/followup',{method:'POST',headers:{Authorization:'Bearer fixture-native-token','Content-Type':'application/json'},body:JSON.stringify(body),signal:controller.signal}).catch(error=>error);
+  for(let i=0;i<200&&!session.snapshotEvents().some(event=>event.data.source?.socialBatchId===body.batchId);i++)await new Promise(resolve=>setTimeout(resolve,5));
+  assert(session.snapshotEvents().some(event=>event.data.source?.socialBatchId===body.batchId));controller.abort();await request;
+  assert.equal((await r.request('/health')).pendingTurns,1);const replay=r.request('/followup',body);release();
+  assert.equal((await replay).cached,true);assert.equal(r.calls.model.length,1);assert.equal(session.snapshotEvents().filter(event=>event.type==='user/message'&&event.data.source?.socialBatchId===body.batchId).length,1);
+});
+
+test('an admitted timeout is not appended again and a different later batch remains usable',async t=>{
+  const f=await fixture(t);let release;const gate=new Promise(resolve=>{release=resolve;});t.after(()=>release());
+  const r=await f.start({contextTokens:1,turnTimeoutMs:30,beforeAssistant:()=>gate}),configured=await r.request('/configure',info),session=f.store.get(configured.sessionId);
+  const body={...info,message:'已接收但超时',batchId:'7'.repeat(64)},failed=await r.request('/followup',body,503);assert.equal(failed.admitted,true);assert.equal(failed.detail,'agent_timeout');
+  const replay=await r.request('/followup',body,502);assert.equal(replay.error,'turn_already_admitted');assert.equal(replay.admitted,true);assert.equal(r.calls.model.length,1);
+  release();await new Promise(resolve=>setTimeout(resolve,10));await r.request('/followup',{...info,message:'新的消息仍然能处理',batchId:'6'.repeat(64)});assert.equal(r.calls.model.length,2);
+  assert.equal(session.snapshotEvents().filter(event=>event.type==='user/message'&&event.data.source?.socialBatchId===body.batchId).length,1);
+});
+
+test('terminal failure receipts and journal admission survive restart without a second inbox append',async t=>{
+  const f=await fixture(t),body={...info,message:'终态失败也去重',batchId:'5'.repeat(64)};
+  const first=await f.start({contextTokens:1,turnReason:()=> 'error'}),failed=await first.request('/followup',body,502);assert.equal(failed.admitted,true);await first.stop();
+  const resumed=await f.start({contextTokens:1}),cached=await resumed.request('/followup',body,502);assert.equal(cached.cached,true);assert.equal(cached.admitted,true);assert.equal(resumed.calls.model.length,0);await resumed.stop();
+  const saved=JSON.parse(fs.readFileSync(f.statePath));delete saved.profiles[key].cache;fs.writeFileSync(f.statePath,JSON.stringify(saved));
+  const withoutCache=await f.start({contextTokens:1}),guarded=await withoutCache.request('/followup',body,502);assert.equal(guarded.error,'turn_already_admitted');assert.equal(withoutCache.calls.model.length,0);
+  await withoutCache.request('/followup',{...body,batchId:'4'.repeat(64)});assert.equal(withoutCache.calls.model.length,1,'Identical text with a new batch is a real new input');
 });
 
 test('timeout cancels the native turn, clears pending state and admits a retry once idle',async t=>{
@@ -675,4 +704,59 @@ test('failed replacement creation keeps the archived mapping and retry allocates
   f.archived.add(fresh.sessionId);const next=await r.request('/followup',{...info,message:'再次归档后'});
   assert.notEqual(next.sessionId,fresh.sessionId);
   assert.equal((await r.request('/sessions')).sessions.find(s=>s.conversationKey===key).generation,2);
+});
+
+test('long valid personas and Unicode batches above 64 KiB are admitted intact and still enforce owner digests',async t=>{
+  const f=await fixture(t),full='A'.repeat(60000),message='群聊消息'.repeat(3500);f.setPersona(key,'长人格',full);
+  const r=await f.start(),body={conversationKey:key,persona:full,personaName:'长人格',message};assert(Buffer.byteLength(JSON.stringify(body))>65536);
+  const result=await r.request('/followup',body);assert(result.sessionId);assert.equal(r.calls.model.length,1);assert(r.calls.model[0].includes(message));assert(r.calls.model[0].includes(full));
+  const digest=crypto.createHash('sha256').update(full).digest('hex');await r.request('/followup',{conversationKey:key,personaName:'长人格',personaDigest:digest,message:'摘要校验后继续'});assert.equal(r.calls.model.length,2);
+  const denied=await r.request('/followup',{conversationKey:key,personaDigest:'a'.repeat(64),message:'不应执行'},403);assert.equal(denied.error,'behavior_change_denied');assert.equal(r.calls.model.length,2);
+});
+
+test('too-large RPC bodies return a definite 413 before creating an agent and do not poison later requests',async t=>{
+  const f=await fixture(t),r=await f.start();const response=await r.request('/followup',{...info,message:'正常消息',extra:'x'.repeat(256*1024)},413);
+  assert.equal(response.error,'request_too_large');assert.equal(response.detail,'REQUEST_TOO_LARGE');assert.equal(response.admitted,false);assert.equal(response.limitBytes,256*1024);assert.equal(r.calls.create.length,0);assert.equal(r.calls.model.length,0);
+  const next=await r.request('/followup',{...info,message:'下一条仍可正常处理'});assert(next.sessionId);assert.equal(r.calls.model.length,1);
+});
+
+test('assistant and social modes preserve independent native histories across switches and restart',async t=>{
+ const f=await fixture(t);fs.mkdirSync(path.join(f.dir,'config'),{recursive:true});fs.writeFileSync(path.join(f.dir,'config/wechatagent.json'),JSON.stringify({wechat:{whitelist:{private:['123'],groups:[]}}}));const file=path.join(f.dir,'config/wechatagent.json'),config=JSON.parse(fs.readFileSync(file));
+ const mode=value=>{config.wechat.assistant={administrators:['wxid_fixture_admin']};config.wechat.workModes={[key]:value};fs.writeFileSync(file,JSON.stringify(config));};
+ const r=await f.start();const social=await r.request('/followup',{...info,message:'聊天专属内容',workMode:'social'}),saved=structuredClone(f.store.get(social.sessionId).snapshotEvents());
+ mode('assistant');const helper=await r.request('/followup',{...info,assistantSender:'wxid_fixture_admin',message:'助手独立任务',workMode:'assistant'});
+ assert.notEqual(helper.sessionId,social.sessionId);assert.equal(r.agents.get(helper.sessionId).ctx.preset,'wechat-assistant');assert(!r.calls.model.at(-1).includes('聊天专属内容'));assert(r.calls.model.at(-1).includes('助手独立任务'));
+ assert.deepEqual(f.store.get(social.sessionId).snapshotEvents(),saved);assert(!f.archived.has(social.sessionId));
+ await r.request('/followup',{...info,message:'过期模式不得进入',workMode:'social'},403);
+ mode('social');assert.equal((await r.request('/followup',{...info,message:'回到聊天',workMode:'social'})).sessionId,social.sessionId);assert(r.calls.model.at(-1).includes('聊天专属内容'));assert(!r.calls.model.at(-1).includes('助手独立任务'));
+ await r.stop();const resumed=await f.start();mode('assistant');assert.equal((await resumed.request('/followup',{...info,assistantSender:'wxid_fixture_admin',message:'重启继续任务',workMode:'assistant'})).sessionId,helper.sessionId);
+ assert(resumed.calls.model.at(-1).includes('助手独立任务'));assert(!resumed.calls.model.at(-1).includes('回到聊天'));
+});
+
+test('assistant task status and cancellation bypass the running followup without losing the session',async t=>{
+ const f=await fixture(t);fs.mkdirSync(path.join(f.dir,'config'),{recursive:true});fs.writeFileSync(path.join(f.dir,'config/wechatagent.json'),JSON.stringify({wechat:{whitelist:{private:['123'],groups:[]},assistant:{administrators:['wxid_fixture_admin']},workModes:{[key]:'assistant'}}}));
+ let started=false,release;const gate=new Promise(resolve=>{release=resolve;});const r=await f.start({beforeAssistant:async()=>{if(!started){started=true;await gate;}}});
+ const first=r.request('/followup',{...info,assistantSender:'wxid_fixture_admin',message:'独立离线慢任务',workMode:'assistant',batchId:'f'.repeat(64)},503);for(let i=0;i<100&&!started;i++)await new Promise(resolve=>setTimeout(resolve,5));assert(started);
+ assert.equal((await r.request('/assistant-task/status',{conversationKey:key,localControl:true})).running,true);
+ assert.equal((await r.request('/assistant-task/cancel',{conversationKey:key,localControl:true})).running,false);const cancelled=await first;assert.equal(cancelled.admitted,true);release();await new Promise(resolve=>setTimeout(resolve,10));
+ const next=await r.request('/followup',{...info,assistantSender:'wxid_fixture_admin',message:'取消后继续',workMode:'assistant'});assert(next.sessionId);assert.equal((await r.request('/assistant-task/status',{conversationKey:key,localControl:true})).running,false);
+});
+
+test('assistant admission rejects unauthenticated senders before creating sessions and rechecks revoked owners',async t=>{
+ const f=await fixture(t),file=path.join(f.dir,'config/wechatagent.json');fs.mkdirSync(path.dirname(file),{recursive:true});
+ const w={whitelist:{private:['123'],groups:['456']},workModes:{[key]:'assistant','wechat:group:456':'assistant'},assistant:{administrators:['wxid_admin'],adminOnlyGroups:{'wechat:group:456':false}}};
+ const save=()=>fs.writeFileSync(file,JSON.stringify({wechat:w}));save();let started=false,release;
+ const gate=new Promise(resolve=>{release=resolve;});const r=await f.start({beforeAssistant:async()=>{if(!started){started=true;await gate;}}});
+ const denied=await r.request('/followup',{...info,message:'冒充管理员'},403);assert.equal(denied.detail,'ASSISTANT_SENDER_DENIED');assert.equal(r.calls.create.length,0);
+ const first=r.request('/followup',{...info,assistantSender:'wxid_member',conversationKey:'wechat:group:456',message:'成员任务'},503);
+ for(let i=0;i<100&&!started;i++)await new Promise(resolve=>setTimeout(resolve,5));assert(started);
+ await r.request('/assistant-task/status',{conversationKey:'wechat:group:456',senderWxid:'wxid_stranger'},403);
+ await r.request('/assistant-task/cancel',{conversationKey:'wechat:group:456',senderWxid:'wxid_stranger'},403);
+ assert.equal((await r.request('/assistant-task/status',{conversationKey:'wechat:group:456',senderWxid:'wxid_member'})).running,true);
+ const agent=[...r.agents.values()][0],check=agent.ctx[Symbol.for('wechatagent.assistant-access.v1')];assert.equal(check(),true);
+ w.assistant.adminOnlyGroups['wechat:group:456']=true;save();assert.equal(check(),false);
+ await r.request('/assistant-task/cancel',{conversationKey:'wechat:group:456',senderWxid:'wxid_member'},403);
+ assert.equal((await r.request('/assistant-task/cancel',{conversationKey:'wechat:group:456',senderWxid:'wxid_admin'})).running,false);
+ await first;release();await new Promise(resolve=>setTimeout(resolve,10));
+ const next=await r.request('/followup',{...info,assistantSender:'wxid_admin',message:'管理员继续'});assert(next.sessionId);
 });

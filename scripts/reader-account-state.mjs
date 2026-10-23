@@ -8,7 +8,7 @@ const write = (file, value) => {
   const temp = file + '.' + process.pid + '.tmp';
   fs.writeFileSync(temp, JSON.stringify(value, null, 2) + '\n', { mode: 0o600 }); fs.renameSync(temp, file);
 };
-const stateFiles = ['social-messages.json', 'sticker-delivery-pending.json', 'text-deliveries', 'proactive', 'search', 'media'];
+const stateFiles = ['files','social-messages.json', 'sticker-delivery-pending.json', 'text-deliveries', 'proactive', 'search', 'media'];
 const chatFeatures = ['stickers', 'search', 'proactive', 'context', 'memeLibrary', 'memberMemory'];
 const protectedKey = key => typeof key === 'string' && /^userdpapi:[A-Za-z0-9+/=]+$/.test(key);
 
@@ -39,7 +39,7 @@ export function cachedReaderAccount(root, id) {
 }
 
 export function accountChatSettings(config) {
-  return { whitelist: structuredClone(config.wechat.whitelist), personaChats: structuredClone(config.persona.chats ?? {}),chatModes:structuredClone(config.wechat.chatModes??{}),dshChats:structuredClone(config.wechat.dshAccess?.chats??{}),
+  return { assistant:structuredClone(config.wechat.assistant??{}),whitelist: structuredClone(config.wechat.whitelist), personaChats: structuredClone(config.persona.chats ?? {}),workModes:structuredClone(config.wechat.workModes??{}),modeSettings:structuredClone(config.wechat.modeSettings??{}),chatModes:structuredClone(config.wechat.chatModes??{}),dshChats:structuredClone(config.wechat.dshAccess?.chats??{}),
     featureChats: Object.fromEntries(chatFeatures.map(name => [name, structuredClone(config.wechat[name]?.chats ?? {})])) };
 }
 
@@ -81,9 +81,10 @@ export function applyReaderAccount(root, previousReader, nextReader, config) {
   if (changed) for (const item of paths) { assertNoLinks(item.active); assertNoLinks(item.previous); assertNoLinks(item.next); }
   if (changed) {
     const chats = incoming?.chats ?? { whitelist: { private: [], groups: [] }, personaChats: {}, featureChats: {} };
+    selectedConfig.wechat.assistant=structuredClone(chats.assistant??{});
     selectedConfig.wechat.whitelist = structuredClone(chats.whitelist);
     selectedConfig.persona.chats = structuredClone(chats.personaChats ?? {});
-    selectedConfig.wechat.chatModes=structuredClone(chats.chatModes??{});selectedConfig.wechat.dshAccess={chats:structuredClone(chats.dshChats??{})};
+    selectedConfig.wechat.workModes=structuredClone(chats.workModes??{});selectedConfig.wechat.modeSettings=structuredClone(chats.modeSettings??{});selectedConfig.wechat.chatModes=structuredClone(chats.chatModes??{});selectedConfig.wechat.dshAccess={chats:structuredClone(chats.dshChats??{})};
     for (const feature of chatFeatures) if (selectedConfig.wechat[feature]) selectedConfig.wechat[feature].chats = structuredClone(chats.featureChats?.[feature] ?? {});
     // Image credentials and explicit message filters belong to the selected account.
     for (const field of ['imageAesKey', 'imageXorKey', 'messagePushFilterList']) {

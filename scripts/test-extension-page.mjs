@@ -22,19 +22,19 @@ function fixture(t,{memeStatus=async()=>({available:true}),dshCatalog=async()=>(
 function assertCards(html,catalog) {
   assert.equal(typeof html,'string');
   assert(!html.includes('[object Promise]'),'the page must contain rendered markup');
-  assert.match(html,/href="#stickers"[^>]*>管理表情包/);
+  assert.match(html,/href="#extensions\/network"/);assert(!html.includes('开关与聊天范围'));assert.equal([...html.matchAll(/extension-card-action /g)].length,catalog.extensions.length);
   assert.equal([...html.matchAll(/data-extension-card="/g)].length,catalog.extensions.length);
   for(const item of catalog.extensions)assert(html.includes('data-extension-card="'+item.id+'"'),'missing card: '+item.id);
   assert.match(html,/id="extension-search"/);assert.match(html,/id="extension-status-filter"/);
 }
 
-test('extension page waits for delayed status and renders every card alongside sticker management',async t=>{
+test('extension page waits for delayed status and renders every capability card with canonical settings links',async t=>{
   let release;const delayed=new Promise(resolve=>{release=resolve;});
   const f=fixture(t,{memeStatus:()=>delayed});let settled=false;
   const pending=f.ui.page().then(html=>{settled=true;return html;});
   try{await nextTurn();assert.equal(settled,false,'a slow status response must not turn the catalog into Promise text');}
   finally{release({available:true});}
-  const html=await pending;assertCards(html,f.catalog);assert.match(html,/DSH 技能与插件工具/);
+  const html=await pending;assertCards(html,f.catalog);assert.match(html,/DSH 技能与工具/);
 });
 
 test('unavailable DSH and meme services keep built-in extension cards and settings visible',async t=>{

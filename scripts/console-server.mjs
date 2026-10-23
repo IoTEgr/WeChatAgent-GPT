@@ -1,4 +1,6 @@
+import {feedbackSnapshot,saveFeedback} from '../packages/dsh-social-bridge-plugin/assistant-feedback.mjs';
 import fs from 'node:fs';
+import {createPersonaCategories} from './persona-categories.mjs';
 import {createUpdateChecker} from './update-check.mjs';
 import {builtinCatalog,applyBuiltinUpdate,extensionPresentation} from './extension-status.mjs';
 import {bundledExtensionCatalog,saveBundledExtension} from './bundled-extensions.mjs';
@@ -79,10 +81,12 @@ export function validateConsoleConfig(config, root) {
   return config;
 }
 
-import {allowedConversation,validateConversationSettings} from '../packages/dsh-social-bridge-plugin/conversation-policy.mjs';
+import {allowedConversation,validateConversationSettings,conversationWorkMode} from '../packages/dsh-social-bridge-plugin/conversation-policy.mjs';
 export function createConsole({ root = projectRoot, port = 3210, runner, readerSetup = runReaderSetup, accountVerifier = verifyWeChatAccount, fetchImpl = fetch, nodeExecutable = process.execPath, filePicker, onQuit, processProbe, processStop } = {}) {
   const updates=createUpdateChecker({root,fetchImpl});
   const publicDir = path.join(projectRoot, 'public', 'console');
+  const personaCategories=createPersonaCategories(root);
+  const categorySnapshot=()=>{try{return personaCategories.read();}catch(error){return {categories:[],assignments:{},revision:null,error:error.message};}};
   const configFile = path.join(root, 'config', 'wechatagent.json');
   const preferenceFile = path.join(root, 'state', 'console-state.json');
   const deletedPersonaFile = name => path.join(root,'state','deleted-personas',hash(name.toLocaleLowerCase())+'.json');
@@ -366,8 +370,13 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
         assets['/external-links.js']=['external-links.js','text/javascript; charset=utf-8'];
         assets['/sticker-manager.js']=['sticker-manager.js','text/javascript; charset=utf-8'];assets['/sticker-manager.css']=['sticker-manager.css','text/css; charset=utf-8'];
         assets['/updates.js']=['updates.js','text/javascript; charset=utf-8'];
+        for(const file of ['workspace-layout.js','layout-model.mjs'])assets['/'+file]=[file,'text/javascript; charset=utf-8'];
+        assets['/workspace-layout.css']=['workspace-layout.css','text/css; charset=utf-8'];
+        assets['/assistant-feedback.js']=['assistant-feedback.js','text/javascript; charset=utf-8'];
         assets['/conversation-settings.mjs']=['conversation-settings.mjs','text/javascript; charset=utf-8'];
+        assets['/dsh-catalog.mjs']=['dsh-catalog.mjs','text/javascript; charset=utf-8'];
         assets['/persona-delete.js']=['persona-delete.js','text/javascript; charset=utf-8'];
+        assets['/persona-categories.js']=['persona-categories.js','text/javascript; charset=utf-8'];assets['/persona-categories.css']=['persona-categories.css','text/css; charset=utf-8'];
         assets['/dsh-install.mjs']=['dsh-install.mjs','text/javascript; charset=utf-8'];
         assets['/session-groups.js']=['session-groups.js','text/javascript; charset=utf-8'];assets['/session-groups.css']=['session-groups.css','text/css; charset=utf-8'];
         assets['/process-recovery.js']=['process-recovery.js','text/javascript; charset=utf-8'];assets['/process-recovery.css']=['process-recovery.css','text/css; charset=utf-8'];
@@ -378,6 +387,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
       if (req.method === 'GET' && route === '/api/info') return reply(200, { project: 'WeChatAgent Console', root, version: 1, token: csrf });
       if (req.headers['x-console-token'] !== csrf) throw fault('控制台连接已更新，请刷新页面。', 401);
       if(req.method==='GET'&&route==='/api/updates')return reply(200,await updates.check());
+      if(req.method==='GET'&&route==='/api/assistant-feedback')return reply(200,feedbackSnapshot(root));
       if (req.method === 'GET' && route === '/api/config') return reply(200, { ...snapshot(), ...optionalJson(preferenceFile) });
       if(req.method==='GET'&&route==='/api/sticker-pool')return reply(200,await reader('/api/v1/stickers/pool-status'));
       if(req.method==='GET'&&route==='/api/sticker-manager')return reply(200,await stickerManager(''));
@@ -386,13 +396,13 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
         if(!/^[a-f0-9]{64}$/.test(id??'')||!/^[a-f0-9]{64}$/.test(scope??''))throw fault('请选择当前账号中的表情。');
         return reply(200,await stickerManager('/image?id='+id+'&scope='+scope+'&animated='+(url.searchParams.get('animated')==='1'?'1':'0')));
       }
-      if(req.method==='GET'&&route==='/api/dsh-catalog')return reply(200,await plugin('/dsh-catalog'));
+      if(req.method==='GET'&&route==='/api/dsh-catalog'){const key=url.searchParams.get('conversationKey');if(key&&!allowedConversation(snapshot().config.wechat,key))throw fault('请先保存聊天范围。');return reply(200,await plugin('/dsh-catalog'+(key?'?conversationKey='+encodeURIComponent(key):'')));}
       if(req.method==='GET'&&route==='/api/meme-library-status'){try{return reply(200,await plugin('/meme-library/status'));}catch{return reply(200,{available:false,installed:false,reason:'DSH_PLUGIN_UNAVAILABLE'});}}
       if(req.method==='GET'&&route==='/api/extensions'){const saved=snapshot();let connected=false;try{connected=!!(await plugin('/health')).ok;}catch{}return reply(200,builtinCatalog(saved.config,saved.revision,connected));}
       if (req.method === 'GET' && route === '/api/deployment') {
         const distribution = optionalJson(path.join(root, 'config', 'distribution.json'));
         const readerSettings = optionalJson(path.join(root, 'state', 'weflow', 'WeFlow-config.json'));
-        return reply(200, { installed: !!distribution.installed, version: distribution.version ?? '0.3.9', configured: !!readerSettings.dbPath && !!readerSettings.myWxid && !!readerSettings.decryptKey && readerVerified(), pluginPath: path.join(root, 'packages', 'dsh-social-bridge-plugin') });
+        return reply(200, { installed: !!distribution.installed, version: distribution.version ?? '0.4.0', configured: !!readerSettings.dbPath && !!readerSettings.myWxid && !!readerSettings.decryptKey && readerVerified(), pluginPath: path.join(root, 'packages', 'dsh-social-bridge-plugin') });
       }
       if (req.method === 'GET' && route === '/api/status') return reply(200, await getStatus());
       if(req.method==='GET' && route==='/api/process-recovery'){
@@ -407,9 +417,10 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
         return reply(200,await processRecovery.scan(config.config,config.revision,{healthyPorts:healthyPorts.filter(port=>!conflictPorts.includes(port)),includeMatchingWeChat:/HOOK_COMPONENT_UPDATE_PENDING|HOOK_CLIENT_UNHEALTHY|HOOK_INITIALIZATION_TIMEOUT|HOOK_NOT_LISTENING/.test(jobs.get(latestJob)?.output??'')}));
       }
 
+      if (req.method === 'GET' && route === '/api/persona-categories') return reply(200,personaCategories.read());
       if (req.method === 'GET' && route === '/api/roles') {
         const names = fs.existsSync(path.join(root, 'roles')) ? fs.readdirSync(path.join(root, 'roles')).filter(n => n.endsWith('.md') && n !== 'README.md' && roleName(n.slice(0, -3))) : [];
-        return reply(200, { roles: names.map(file => { const content = fs.readFileSync(path.join(root, 'roles', file), 'utf8'); return { name: file.slice(0, -3), content, revision: hash(content) }; }) });
+        return reply(200, { categories: categorySnapshot(), roles: names.map(file => { const content = fs.readFileSync(path.join(root, 'roles', file), 'utf8'); return { name: file.slice(0, -3), content, revision: hash(content) }; }) });
       }
       if (req.method === 'GET' && route === '/api/contacts') {
         const kind = url.searchParams.get('kind') === 'groups' ? 'groups' : 'private';
@@ -420,6 +431,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
         const rows = data.contacts ?? [];
         const contacts = rows.filter(c => c.username && c.username !== io.self_wxid && (c.username.includes('@chatroom') ? 'groups' : 'private') === kind)
           .map(c => ({ name: c.remark || c.displayName || c.nickname || c.username, id: String(conversationId(c.username, c.displayName, c.conversationId)), ambiguous: c.ambiguous === true,
+            ...(kind==='private'&&url.searchParams.get('includeIdentity')==='1'?{wechatId:c.username}:{}),
             ...(kind==='groups'&&c.conversationId!==undefined?{groupRef:c.username}:{}) }));
         const counts = new Map(); for (const row of contacts) counts.set(row.id, (counts.get(row.id) ?? 0) + 1);
         return reply(200, { contacts: contacts.map(c => ({ ...c, ambiguous: c.ambiguous || counts.get(c.id) > 1 })) });
@@ -464,6 +476,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
         if(!response.ok){const text=value.error==='GROUP_BINDING_ALREADY_ASSIGNED'?'原会话已绑定另一个真实群，请勿把不同群的历史合并。':value.error==='GROUP_BINDING_ALREADY_SELECTED'?'该群已添加到其他聊天，请先核对聊天范围中的重复项。':'群资料尚未准备好，请在匹配微信中打开该群，再刷新搜索。';throw fault(text,409);}
         statusTime=0;return reply(200,{ok:true,id:String(body.id),name:value.displayName});
       }
+      if(['/api/assistant-task/status','/api/assistant-task/cancel','/api/assistant-task/list'].includes(route))return reply(200,await plugin(route.slice(4),{conversationKey:body.key,taskId:body.taskId,localControl:true}));
       if (route === '/api/chat-settings') {
         const previous = snapshot();
         if (body.revision !== previous.revision) throw fault('配置已变化，请重新打开此会话设置。', 409);
@@ -471,11 +484,20 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
         const config = structuredClone(previous.config);
         applyChatSettings(config, body.key, body.settings, body.access);
         validateConsoleConfig(config, root);
+        const workModeChanged=conversationWorkMode(previous.config.wechat,body.key)!==conversationWorkMode(config.wechat,body.key);
+        if(workModeChanged){
+          const local=buffered().buffer;
+          if(local.pendingReplies?.[body.key]||local.pendingRequests?.[body.key])throw fault('此会话还有待处理的回复，请完成当前任务后再切换模式。',409);
+          // Offline configuration remains possible; a connected busy session must finish first.
+          try{const sessions=await plugin('/sessions'),session=sessions.sessions.find(item=>item.conversationKey===body.key);if(session?.running)throw fault('此会话正在执行，请等待完成或取消任务后再切换模式。',409);}catch(error){if(error.status===409)throw error;}
+        }
         const personaChanged = (previous.config.persona.chats?.[body.key] ?? null) !== (config.persona.chats?.[body.key] ?? null);
         backup(configFile); atomic(configFile, config);
         if (personaChanged) markPending();
         statusTime = 0;
-        return reply(200, { ...snapshot(), ...optionalJson(preferenceFile), personaChanged });
+        let modeReady=false;
+        if(workModeChanged)try{await plugin('/configure',{conversationKey:body.key,workMode:conversationWorkMode(config.wechat,body.key)});modeReady=true;}catch{}
+        return reply(200, { ...snapshot(), ...optionalJson(preferenceFile), personaChanged,workModeChanged,modeReady });
       }
       if(route==='/api/dsh-access'){const previous=snapshot();if(body.revision!==previous.revision)throw fault('配置已变化，请重新打开此聊天设置。',409);if(!allowedConversation(previous.config.wechat,body.key))throw fault('只能为已允许的聊天分配技能。');const config=structuredClone(previous.config);config.wechat.dshAccess??={chats:{}};config.wechat.dshAccess.chats[body.key]={skills:body.skills,tools:body.tools};validateConversationSettings(config.wechat);backup(configFile);atomic(configFile,config);statusTime=0;return reply(200,{...snapshot(),pendingApply:false});}
       if(route==='/api/extensions/meme-search')throw fault('表情素材工具由 DSH 项目插件提供，请在 DSH 授权页分配到聊天。',410);
@@ -508,10 +530,12 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
         const config = validateConsoleConfig(body.config, root);
         if (Object.values(config.ports).includes(boundPort) || Number(new URL(config.hook.baseUrl).port || 80) === boundPort) throw fault('服务端口不能与当前控制台端口重复。');
         backup(configFile); atomic(configFile, config);
-        const withoutStickers=value=>{const copy=structuredClone(value);delete copy.wechat.stickers;delete copy.wechat.search;delete copy.wechat.webReader;delete copy.wechat.proactive;delete copy.wechat.context;delete copy.wechat.chatModes;delete copy.wechat.dshAccess;delete copy.wechat.memeLibrary;return copy;};
+        const withoutStickers=value=>{const copy=structuredClone(value);delete copy.wechat.stickers;delete copy.wechat.search;delete copy.wechat.webReader;delete copy.wechat.proactive;delete copy.wechat.context;delete copy.wechat.chatModes;delete copy.wechat.dshAccess;delete copy.wechat.memeLibrary;delete copy.wechat.assistant;return copy;};
         if(JSON.stringify(withoutStickers(previous.config))!==JSON.stringify(withoutStickers(config)))markPending(JSON.stringify(previous.config.dsh) !== JSON.stringify(config.dsh) || previous.config.ports.dshPlugin !== config.ports.dshPlugin);
         return reply(200, { ...snapshot(), ...optionalJson(preferenceFile) });
       }
+      if(route==='/api/assistant-feedback')return reply(200,saveFeedback(root,body));
+      if (route === '/api/persona-categories') return reply(200,personaCategories.update(body));
       if (route === '/api/roles/delete') {
         if(personaError(body.name,'check'))throw fault('请选择有效的人设卡，不能删除说明文件或文件路径。');
         if(body.confirmed!==true)throw fault('请先确认删除人设卡。',409);
@@ -523,13 +547,14 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
         const name=filename.slice(0,-3),file=path.join(directory,filename),stat=fs.lstatSync(file);
         if(!stat.isFile()||stat.isSymbolicLink())throw fault('此人设不是普通文件，不能删除。');
         if(body.revision!==hash(fs.readFileSync(file,'utf8')))throw fault('人设卡已被修改，请重新载入后再删除。',409);
-        const references=personaReferences(snapshot().config.persona,name);
+        const references=personaReferences(snapshot().config.persona,name,snapshot().config.wechat.modeSettings);
         if(references.default)throw fault('此人设是默认人设，请先切换默认人设并保存设置。',409);
         if(references.chats.length)throw fault('有聊天正在使用此人设，请先切换聊天人设并保存设置。',409);
         backup(file);
         const marker=deletedPersonaFile(name),previous=fs.existsSync(marker)?fs.readFileSync(marker,'utf8'):null;
         atomic(marker,{version:1,name});
-        try{fs.unlinkSync(file);}catch(error){if(previous===null)fs.unlinkSync(marker);else atomic(marker,previous);throw error;}
+        let restoreCategories;
+        try{restoreCategories=personaCategories.forget(name);fs.unlinkSync(file);}catch(error){restoreCategories?.();if(previous===null)fs.unlinkSync(marker);else atomic(marker,previous);throw error;}
         return reply(200,{ok:true,name});
       }
       if (route === '/api/roles') {
@@ -543,7 +568,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
         backup(file); atomic(file, body.content);
         const marker=deletedPersonaFile(body.name);if(fs.existsSync(marker))fs.unlinkSync(marker);
         markPending();
-        return reply(200, { ok: true, revision: hash(body.content) });
+        return reply(200, { ok: true, revision: hash(body.content), categories: categorySnapshot() });
       }
       if (route === '/api/browse') {
         if (!['exe', 'folder', 'workspace'].includes(body.kind)) throw fault('无效的文件类型。');

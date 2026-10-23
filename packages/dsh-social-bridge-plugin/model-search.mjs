@@ -5,11 +5,12 @@ import {searchPolicy} from './search-policy.mjs';
 import {searchErrorCode,searchSourceUrl} from './search-provider.mjs';
 import {createDshSearch} from './dsh-search.mjs';
 import {normalizeWebUrl} from './web-reader-policy.mjs';
+import {FILE_TRANSFER_POLICY} from './file-transfers.mjs';
 import {DSH_ACCESS_POLICY} from './dsh-access.mjs';
 import {WEB_READER_POLICY} from './web-reader-policy.mjs';
 import {MEME_LIBRARY_POLICY} from './meme-library-policy.mjs';
 import {MEMBER_MEMORY_POLICY} from './member-memory-policy.mjs';
-export const MODEL_SEARCH_TOOL='web_search';
+export const MODEL_SEARCH_TOOL='wechat_web_search';
 export const MODEL_SEARCH_POLICY=Symbol.for('wechatagent.model-search.v1');
 const clip=(text,size)=>Array.from(String(text??'')).slice(0,size).join('');
 const skill=JSON.parse(fs.readFileSync(new URL('./skills/search/skill.json',import.meta.url),'utf8'));
@@ -90,7 +91,7 @@ export function bindModelSearch(agentCtx,root,key,turnFor,{nativeSearch,log=()=>
 export function refreshSearchToolBaseline(agentCtx,session,turn){
   if(!turn||turn.baselineEstablished||typeof session.requestHeader!=='function')return false;
   const previous=session.requestHeader();if(!previous?.config)return false;
-  const policies=[MODEL_SEARCH_POLICY,WEB_READER_POLICY,DSH_ACCESS_POLICY,MEME_LIBRARY_POLICY,MEMBER_MEMORY_POLICY,Symbol.for('wechatagent.extension-tools.v1')].map(symbol=>agentCtx[symbol]).filter(Boolean);
+  const policies=[MODEL_SEARCH_POLICY,WEB_READER_POLICY,DSH_ACCESS_POLICY,FILE_TRANSFER_POLICY,MEME_LIBRARY_POLICY,MEMBER_MEMORY_POLICY,Symbol.for('wechatagent.extension-tools.v1')].map(symbol=>agentCtx[symbol]).filter(Boolean);
   const allowed=new Set(policies.flatMap(policy=>[...policy.names()]));
   const definitions=new Map();
   for(const policy of policies)for(const tool of policy.definitions?.()??[])if(allowed.has(tool.name))definitions.set(tool.name,{name:tool.name,description:tool.description,parameters:structuredClone(tool.parameters)});

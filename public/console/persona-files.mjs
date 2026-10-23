@@ -1,8 +1,8 @@
 export const MAX_PERSONA_BYTES = 60000;
 
-export function personaReferences(persona, name) {
+export function personaReferences(persona, name, modeSettings={}) {
   const same = value => typeof value === 'string' && value.toLocaleLowerCase() === name.toLocaleLowerCase();
-  return { default: same(persona?.default), chats: Object.entries(persona?.chats ?? {}).filter(([,value])=>same(value)).map(([key])=>key) };
+  return { default: same(persona?.default), chats: [...new Set([...Object.entries(persona?.chats ?? {}).filter(([,value])=>same(value)).map(([key])=>key),...Object.entries(modeSettings).filter(([,modes])=>Object.values(modes).some(value=>same(value.settings?.persona))).map(([key])=>key)])] };
 }
 
 export function personaError(name, content) {

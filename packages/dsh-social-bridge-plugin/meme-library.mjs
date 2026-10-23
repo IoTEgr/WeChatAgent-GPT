@@ -104,7 +104,7 @@ export function bindMemeLibrary(agentCtx,library,root,key,turnFor,{isAllowed=()=
   const active=()=>isAllowed()&&!!turnFor()&&!turnFor().disabled&&!turnFor().controller.signal.aborted&&policy().enabled;
   const output={schema:{type:'object',properties:{content:{type:'string'},isError:{type:'boolean'}},required:['content','isError'],additionalProperties:false},render:(_args,value)=>[{type:'text',text:value.content}]};
   const definitions=[
-    {name:'wechat_meme_search',description:'优先搜索 dsh-meme 已启用本地图库。没有合适素材且允许联网时，先调用现有 web_search，再把本轮来源链接作为 sourceUrl 传入，从页面提取真实图片候选；未执行页面脚本。需要发图时用 wechat_meme_select。',parameters:{type:'object',properties:{query:{type:'string',minLength:1,maxLength:120},sourceUrl:{type:'string',maxLength:1500}},required:['query'],additionalProperties:false}},
+    {name:'wechat_meme_search',description:'优先搜索 dsh-meme 已启用本地图库。没有合适素材且允许联网时，先调用现有 wechat_web_search，再把本轮来源链接作为 sourceUrl 传入，从页面提取真实图片候选；未执行页面脚本。需要发图时用 wechat_meme_select。',parameters:{type:'object',properties:{query:{type:'string',minLength:1,maxLength:120},sourceUrl:{type:'string',maxLength:1500}},required:['query'],additionalProperties:false}},
     {name:'wechat_meme_select',description:'选择本轮 wechat_meme_search 返回的一张表情，准备成当前微信聊天可发送的资源，无需等待收藏池筛选；按返回的完整 STICKER 标记回复，不代表已经发出。',parameters:{type:'object',properties:{candidateId:{type:'string',pattern:'^[a-f0-9]{32}$'}},required:['candidateId'],additionalProperties:false}},
     {name:'wechat_meme_import',description:'当前聊天允许联网补图时，把搜索确认的公开图片 HTTPS 直链加入图库并准备微信发送。仅搜索短公开关键词，不上传聊天原文。需要实际图片地址、内容描述和原搜索词；不能把网页地址当图片。',parameters:{type:'object',properties:{imageUrl:{type:'string',maxLength:1500},description:{type:'string',minLength:1,maxLength:120},query:{type:'string',maxLength:120},tag:{type:'string',pattern:'^[a-z0-9_-]{1,20}$'}},required:['imageUrl','description','query'],additionalProperties:false}},
   ];
@@ -132,6 +132,6 @@ export function bindMemeLibrary(agentCtx,library,root,key,turnFor,{isAllowed=()=
   const access={names,definitions:()=>definitions.filter(item=>names().has(item.name)),check:name=>names().has(name)};
   Object.defineProperty(agentCtx,MEME_LIBRARY_POLICY,{value:access,configurable:true});
   const dispose=()=>{for(const disposer of disposers)disposer?.();delete agentCtx[MEME_LIBRARY_POLICY];};
-  dispose.instructions=()=>active()?'[微信表情图库]\n需要表情时先用 wechat_meme_search 搜索 dsh-meme 本地图库，再用 wechat_meme_select 选择一张。只使用工具本轮确认的完整 [STICKER:资源ID] 标记，不使用 dsh-meme 网页的 [表情:描述] 标记。资源准备成功不表示微信已发送，由本项目负责回执确认。图库没有合适结果且本轮确有 wechat_meme_import 工具时，先用现有 web_search 搜索短公开素材关键词，再调用 wechat_meme_search(query,sourceUrl=本轮来源链接)提取真实图片候选，最后 select 选图；新图会经过 dsh-meme 识图核验并入库。直接图片链接可用 import 导入。每轮最多一次选图，失败继续正常文字回复。保持当前人设，不为凑图强行发图。\n':'';
+  dispose.instructions=()=>active()?'[微信表情图库]\n需要表情时先用 wechat_meme_search 搜索 dsh-meme 本地图库，再用 wechat_meme_select 选择一张。只使用工具本轮确认的完整 [STICKER:资源ID] 标记，不使用 dsh-meme 网页的 [表情:描述] 标记。资源准备成功不表示微信已发送，由本项目负责回执确认。图库没有合适结果且本轮确有 wechat_meme_import 工具时，先用现有 wechat_web_search 搜索短公开素材关键词，再调用 wechat_meme_search(query,sourceUrl=本轮来源链接)提取真实图片候选，最后 select 选图；新图会经过 dsh-meme 识图核验并入库。直接图片链接可用 import 导入。每轮最多一次选图，失败继续正常文字回复。保持当前人设，不为凑图强行发图。\n':'';
   return dispose;
 }

@@ -2,8 +2,18 @@ import test from 'node:test';import assert from 'node:assert/strict';import fs f
 import deployment from '../apps/console-desktop/deployment.cjs';import {runConsoleCommand,windowsPowerShellExecutable} from './console-process.mjs';
 import {createConsole} from './console-server.mjs';
 import crypto from 'node:crypto';import net from 'node:net';
+import vm from 'node:vm';import {createRequire} from 'node:module';
 const source=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 function fixture(t){const root=fs.mkdtempSync(path.join(os.tmpdir(),'wca-storage-runtime-'));t.after(()=>{assert(root.startsWith(os.tmpdir()+path.sep));fs.rmSync(root,{recursive:true,force:true,maxRetries:5,retryDelay:50});});return root;}
+test('retention allows the unchanged DSH process but still refuses active WeChatAgent services',async t=>{
+ const root=fixture(t),storageFile=path.join(source,'apps/console-desktop/storage-location.cjs'),load=createRequire(storageFile),module={exports:{}};let processes=[];
+ vm.runInNewContext(fs.readFileSync(storageFile,'utf8'),{module,process:{platform:'win32',pid:process.pid,env:{},versions:{}},require:id=>id==='node:child_process'?{execFile:(_exe,_args,_options,callback)=>callback(null,JSON.stringify(processes))}:load(id)},{filename:storageFile});
+ const plan={source:path.join(root,'old'),oldDshHome:path.join(root,'old/dsh'),config:{runtime:{dshDesktop:path.join(root,'old/runtimes/dsh/DeepSeek Harness.exe')}},dshRetained:true};
+ processes=[{Name:'DeepSeek Harness.exe',ProcessId:process.pid+1,ExecutablePath:plan.config.runtime.dshDesktop,CommandLine:'DSH --user-data-dir='+plan.oldDshHome}];
+ await module.exports.assertMigrationIdle(plan);await assert.rejects(module.exports.assertMigrationIdle({...plan,dshRetained:false}),/旧实例仍在运行/);
+ processes.push({Name:'node.exe',ProcessId:process.pid+2,ExecutablePath:path.join(plan.source,'runtimes/node.exe'),CommandLine:path.join(plan.source,'workspace/scripts/bridge.mjs')+' --dsh-home='+plan.oldDshHome});
+ await assert.rejects(module.exports.assertMigrationIdle(plan),/旧实例仍在运行/);
+});
 test('automatically selected console ports are browser-accessible and remain loopback-only',async t=>{
  const root=fixture(t);
  for(let i=0;i<6;i++){const app=createConsole({root,port:0});try{const address=await app.start();assert(address.port>=20000&&address.port<60000);assert.equal(address.address,'127.0.0.1');const response=await fetch(`http://127.0.0.1:${address.port}/api/info`);assert.equal(response.status,200);}finally{app.server.closeAllConnections();if(app.server.listening)await new Promise(resolve=>app.server.close(resolve));}}

@@ -1,6 +1,6 @@
 {
   "name": "wechatagent",
-  "version": "0.3.9",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "description": "Personal WeChat AI friend with NT reader, WeChat-Hook, OneBot v11 and an existing DSH Desktop",
@@ -38,7 +38,17 @@
     "test:persona-delete": "node --test scripts/test-persona-delete.mjs",
     "test:external-dsh": "node --test scripts/test-external-dsh.mjs",
     "test:wechat-account": "node --test scripts/test-wechat-account-check.mjs scripts/test-reader-account-state.mjs scripts/test-hook-startup.mjs",
-    "test:session-groups": "node --test scripts/test-session-groups.mjs scripts/test-native-session.mjs"
+    "test:session-groups": "node --test scripts/test-session-groups.mjs scripts/test-native-session.mjs",
+    "test:followup": "node --test scripts/test-followup-dedup.mjs scripts/test-plugin-client.mjs scripts/test-native-session.mjs",
+    "test:personas": "node --test scripts/test-persona-categories.mjs scripts/test-persona-delete.mjs",
+    "test:requests": "node --test scripts/test-request-admission.mjs scripts/test-plugin-client.mjs scripts/test-native-session.mjs",
+    "test:assistant": "node --test scripts/test-assistant-mode.mjs scripts/test-native-session.mjs scripts/test-assistant-controller.mjs scripts/test-assistant-access.mjs scripts/test-assistant-feedback.mjs",
+    "test:catalog": "node --test scripts/test-plugin-catalog.mjs scripts/test-extension-page.mjs scripts/test-persona-categories.mjs",
+    "test:assistant-access": "node --test scripts/test-assistant-access.mjs scripts/test-assistant-mode.mjs scripts/test-native-session.mjs",
+    "test": "node --test scripts/test-*.mjs",
+    "test:assistant-controller": "node --test scripts/test-assistant-controller.mjs scripts/test-assistant-mode.mjs scripts/test-assistant-access.mjs scripts/test-file-transfers.mjs scripts/test-assistant-feedback.mjs",
+    "test:assistant-feedback": "node --test scripts/test-assistant-feedback.mjs",
+    "test:layout": "node --test scripts/test-workspace-layout.mjs scripts/test-extension-page.mjs"
   },
   "devDependencies": {
     "@electron/asar": "3.4.1",

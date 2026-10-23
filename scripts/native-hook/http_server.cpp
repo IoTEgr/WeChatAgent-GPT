@@ -9,20 +9,25 @@
 HttpServer::HttpServer() = default;
 HttpServer::~HttpServer() { Stop(); }
 bool HttpServer::Start(const std::string& host, int port) {
+    WeChatAgentInitStage("http_lifecycle_lock");
     std::lock_guard<std::mutex> guard(m_lifecycle);
     if (m_running.load()) return true;
     if (m_thread.joinable()) m_thread.join();
+    WeChatAgentInitStage("http_server_construct");
     m_server = std::make_unique<httplib::Server>();
     m_server->new_task_queue = [] { return new httplib::ThreadPool(CPPHTTPLIB_THREAD_POOL_COUNT); };
     m_server->set_idle_interval(0, 100);
     m_server->set_tcp_nodelay(true);
+    WeChatAgentInitStage("http_register_routes");
     RegisterRoutes(*m_server);
     // Bind synchronously. A non-null object or a spawned thread is not proof
     // that the configured loopback port was successfully reserved.
+    WeChatAgentInitStage("http_bind");
     if (host != "127.0.0.1" || !m_server->bind_to_port(host, port)) {
         WeChatAgentInitLog("http_bind_failed", port); m_server.reset(); return false;
     }
     m_running.store(true);
+    WeChatAgentInitStage("http_thread_start");
     try { m_thread = std::thread(&HttpServer::Run, this); }
     catch (...) { m_server->stop(); m_running.store(false); WeChatAgentInitLog("http_thread_failed", port); return false; }
     m_server->wait_until_ready();

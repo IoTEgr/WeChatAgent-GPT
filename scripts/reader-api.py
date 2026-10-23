@@ -26,6 +26,7 @@ from urllib.parse import parse_qs, urlsplit
 import xml.etree.ElementTree as ET
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from wechat_files import FILE_TYPE, parse_file_message, FileCatalog
 from wechat_media import clean_account_wxid
 from wechat_forwarded import FORWARD_TYPE, parse_forwarded_record
 from wechat_quote import QUOTE_TYPE, parse_quote_reply
@@ -126,7 +127,7 @@ def push_payload(talker, message, names, own_wxid, identity=None):
     if message.get('isSend'):
         return None
     kind = message.get('localType')
-    if kind not in (1, 3, 47, APPMSG_STICKER_TYPE, PAT_TYPE, 49, FORWARD_TYPE, QUOTE_TYPE):
+    if kind not in (1, 3, 47, APPMSG_STICKER_TYPE, PAT_TYPE, 49, FORWARD_TYPE, QUOTE_TYPE, FILE_TYPE):
         return None
     pat = parse_pat(message.get('fullText', ''), sender, own_wxid) if kind == PAT_TYPE else None
     if kind == PAT_TYPE and not pat:
@@ -137,10 +138,11 @@ def push_payload(talker, message, names, own_wxid, identity=None):
         return None
     forwarded = parse_forwarded_record(message.get('fullText', '')) if kind in (49, FORWARD_TYPE) else None
     quote_reply = parse_quote_reply(message.get('fullText', '')) if kind in (49, QUOTE_TYPE) else None
+    file_info = parse_file_message(kind, message.get('fullText', ''))
     sticker = kind==47 or kind in (49,APPMSG_STICKER_TYPE) and sticker_image_xml(kind,message.get('fullText','')) is not None
-    if kind in (49, APPMSG_STICKER_TYPE, FORWARD_TYPE, QUOTE_TYPE) and not sticker and forwarded is None and quote_reply is None:
+    if kind in (49, APPMSG_STICKER_TYPE, FORWARD_TYPE, QUOTE_TYPE) and not sticker and file_info is None and forwarded is None and quote_reply is None:
         return None
-    content = '[图片]' if kind == 3 else '[表情包：附件为静态画面或动画采样画面]' if sticker else '[拍一拍] 对方刚刚拍了拍你。' if pat else '[合并转发聊天记录] ' + forwarded['title'] if forwarded else (quote_reply['reply'] or '[引用回复，正文为空]') if quote_reply else message.get('fullText', message.get('content') or message.get('parsedContent', ''))
+    content = '[文件] ' + file_info['name'] if file_info else '[图片]' if kind == 3 else '[表情包：附件为静态画面或动画采样画面]' if sticker else '[拍一拍] 对方刚刚拍了拍你。' if pat else '[合并转发聊天记录] ' + forwarded['title'] if forwarded else (quote_reply['reply'] or '[引用回复，正文为空]') if quote_reply else message.get('fullText', message.get('content') or message.get('parsedContent', ''))
     if not content.strip():
         return None
     group = '@chatroom' in talker
@@ -152,7 +154,8 @@ def push_payload(talker, message, names, own_wxid, identity=None):
         'groupName': names.get(talker, talker) if group else '',
         'sourceName': names.get(sender, sender) if group else names.get(talker, talker),
         'senderName': names.get(sender, sender), 'talkerId': sender,
-        'content': content[:4000], 'type': 47 if sticker else kind, 'timestamp': message.get('createTime', 0),
+        'content': content[:4000], 'type': FILE_TYPE if file_info else 47 if sticker else kind, 'timestamp': message.get('createTime', 0),
+        **({'file': file_info} if file_info else {}),
         **({'pat': pat} if pat else {}),
         **({'forwardedRecord': forwarded} if forwarded else {}),
         **({'quoteReply': quote_reply} if quote_reply else {}),
@@ -196,6 +199,7 @@ class Reader:
         self.image_index = read_json(self.image_index_file) if self.image_index_file.exists() else {}
         self.image_jobs = {}
         self.image_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+        self.files = FileCatalog(self.root, self.account, self.sticker_account_active)
         self.sticker_jobs = {}
         self.sticker_retry_at = {}
         self.sticker_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -367,7 +371,7 @@ class Reader:
             # Preserve complete text: the upstream CLI display truncates to 200.
             table = 'Msg_' + hashlib.md5(talker.encode()).hexdigest()
             for message in data.get('messages', []):
-                if message.get('localType') not in (1, PAT_TYPE, 49, FORWARD_TYPE, QUOTE_TYPE, 47, APPMSG_STICKER_TYPE):
+                if message.get('localType') not in (1, PAT_TYPE, 49, FORWARD_TYPE, QUOTE_TYPE, 47, APPMSG_STICKER_TYPE, FILE_TYPE):
                     continue
                 for connection in connections:
                     if table not in nt.msg_tables(connection):
@@ -378,6 +382,9 @@ class Reader:
                     if row:
                         text = nt._decode_content(row[0])
                         message['fullText'] = nt._strip_group_speaker(text, set(self.names) | {message['senderUsername']}) if '@chatroom' in talker else text
+                        file_info=parse_file_message(message.get('localType'),message['fullText'])
+                        if file_info:
+                            message.update({'fileKind':'appmsg-6','fileName':file_info['name'],'fileSize':file_info['size'],'fileMd5':file_info['md5']})
                         md5=sticker_receipt_md5(message.get('localType'),message['fullText'])
                         if md5:
                             message['stickerMd5']=md5
@@ -760,6 +767,11 @@ class Reader:
                         payload = self.make_payload(talker, message)
                         if not payload or payload['rawid'] in self.seen:
                             continue
+                        if payload['type'] == FILE_TYPE:
+                            reference = self.files.remember(payload, 'wechat:' + ('group:' if '@chatroom' in talker else 'private:') + self.conversation_id(talker))
+                            if not reference:
+                                continue
+                            payload['file'] = reference
                         if payload['type'] in (3, 47):
                             image_id = self.register_image(talker, payload)
                             if not image_id:
@@ -918,6 +930,8 @@ def serve(reader, port, token):
                         'ownWxid': reader.own_wxid, 'accountDirectory': reader.account.name,
                         'imagesRegistered': len(reader.image_index), 'lastImageError': reader.image_error,
                         'groupIdentity': 'account-chatroom-v1', 'lastGroupMetadataError': getattr(reader, 'group_metadata_error', '')})
+                elif re.fullmatch(r'/api/v1/files/[a-f0-9]{64}', url.path):
+                    self.respond(reader.files.resolve(url.path.rsplit('/', 1)[1], query.get('conversationKey', [''])[0], query.get('senderWxid', [''])[0]))
                 elif re.fullmatch(r'/api/v1/images/[a-f0-9]{64}', url.path):
                     self.respond(reader.resolve_image(url.path.rsplit('/', 1)[1]))
                 elif re.fullmatch(r'/api/v1/stickers/pool-review/[a-f0-9]{64}',url.path):

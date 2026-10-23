@@ -3,6 +3,9 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { selectRoleText } from '../components/qq-bridge/src/role-card.js';
+import {personaError} from '../public/console/persona-files.mjs';
+import {upsertToolCatalogPatch} from '../packages/dsh-social-bridge-plugin/plugin-catalog.mjs';
+import {upsertAssistantPresetPatch} from '../packages/dsh-social-bridge-plugin/assistant-preset.mjs';
 import { migrateConnections } from './migrate-io-config.mjs';
 import { validateStickerSettings } from '../components/qq-bridge/src/core/sticker-policy.js';
 import { validateSearchSettings } from '../packages/dsh-social-bridge-plugin/search-policy.mjs';
@@ -75,15 +78,22 @@ export function prepare(root = projectRoot) {
   }
   const tokenFile = path.join(state, 'social-dsh-token.txt');
   if (!fs.existsSync(tokenFile)) fs.writeFileSync(tokenFile, crypto.randomBytes(32).toString('hex'), { flag: 'wx', mode: 0o600 });
-  for (const name of [config.persona.default, ...Object.values(config.persona.chats ?? {})]) {
-    if (!fs.existsSync(path.join(root, 'roles', `${name}.md`))) throw new Error(`Persona file missing: ${name}.md`);
+  const roleTexts=new Map();
+  for (const name of new Set([config.persona.default, ...Object.values(config.persona.chats ?? {})])) {
+    const file=path.join(root, 'roles', `${name}.md`);
+    if (!fs.existsSync(file)) throw new Error(`Persona file missing: ${name}.md`);
+    const raw=fs.readFileSync(file,'utf8'),rawError=personaError(name,raw);
+    if(rawError)throw new Error(`人格“${name}”：${rawError}`);
+    const selected=selectRoleText(raw,'v2'),selectedError=personaError(name,selected);
+    if(selectedError)throw new Error(`人格“${name}”在当前模式下无有效内容，请检查人格卡的模式标记。${selectedError}`);
+    roleTexts.set(name,selected);
   }
   const ioFile = path.join(state, 'wechat-io-config.json');
   const previousIo = fs.existsSync(ioFile) ? read(ioFile) : {};
   write(ioFile, { reader_base_url: `http://127.0.0.1:${config.ports.weflow}`,
     reader_token: previousIo.reader_token || crypto.randomBytes(32).toString('hex'),
     self_wxid: previousIo.self_wxid || '', onebot_ws_url: `ws://127.0.0.1:${config.ports.onebot}/ws` });
-  const roleText = name => selectRoleText(fs.readFileSync(path.join(root, 'roles', `${name}.md`), 'utf8'), 'v2');
+  const roleText = name => roleTexts.get(name);
   write(path.join(state, 'bridge-config.json'), {
     platforms: { wechat: { enabled: true, adapter: 'wechat-onebot', onebot: { server: { host: '127.0.0.1', port: config.ports.onebot, path: '/ws', timeoutMs: 45000 } }, ...config.wechat } },
     dsh_plugin: { url: `http://127.0.0.1:${config.ports.dshPlugin}`, timeoutMs: 125000 },
@@ -113,9 +123,10 @@ export function prepare(root = projectRoot) {
   // Bundle config is read again when DSH fully restarts. Secrets stay in state.
   const patchFile = path.join(root, 'packages', 'dsh-social-bridge-plugin', 'cordis.patch.yml');
   if (fs.existsSync(patchFile)) {
-    const before = fs.readFileSync(patchFile, 'utf8');
+    const existingPatch=fs.readFileSync(patchFile,'utf8');
+    const before=upsertAssistantPresetPatch(upsertToolCatalogPatch(existingPatch,root),root);
     let after = before.replace(/^(        provider:).*/m, `$1 ${JSON.stringify(config.dsh.provider)}`).replace(/^(        model:).*/m, `$1 ${JSON.stringify(config.dsh.model)}`);
-    const moduleDir=path.dirname(patchFile),sources=['image-input.mjs','deadline.mjs','prompt-context.mjs','member-memory.mjs','member-memory-policy.mjs','meme-library.mjs','meme-library-policy.mjs','native-context.mjs','session-groups.mjs','conversation-policy.mjs','dsh-access.mjs','dsh-bundled.mjs','sticker-pool-review.mjs','dsh-migration.mjs','web-reader.mjs','web-reader-policy.mjs','web-reader-content.mjs','web-reader-fetch.mjs','web-reader-zxsj.mjs','skills/web-reader/skill.json','skills/web-reader/SKILL.md','skills/web-reader/references/quotes.md','skills/web-reader/references/video.md','model-search.mjs','dsh-search.mjs','search-provider.mjs','skills/search/skill.json','skills/search/SKILL.md','search-budget.mjs','search-policy.mjs','weather-query.mjs','weather-source.mjs','social-tool-policy.mjs','social-tool-restrict.mjs','context-policy.mjs'].map(name=>path.join(moduleDir,name));
+    const moduleDir=path.dirname(patchFile),sources=['file-tools.mjs','file-transfers.mjs','assistant-policy.mjs','plugin-catalog.mjs','work-modes.mjs','assistant-preset.mjs','local-policy.mjs','image-input.mjs','deadline.mjs','prompt-context.mjs','member-memory.mjs','member-memory-policy.mjs','meme-library.mjs','meme-library-policy.mjs','native-context.mjs','session-groups.mjs','conversation-policy.mjs','dsh-access.mjs','dsh-bundled.mjs','sticker-pool-review.mjs','dsh-migration.mjs','web-reader.mjs','web-reader-policy.mjs','web-reader-content.mjs','web-reader-fetch.mjs','web-reader-zxsj.mjs','skills/web-reader/skill.json','skills/web-reader/SKILL.md','skills/web-reader/references/quotes.md','skills/web-reader/references/video.md','model-search.mjs','dsh-search.mjs','search-provider.mjs','skills/search/skill.json','skills/search/SKILL.md','search-budget.mjs','search-policy.mjs','weather-query.mjs','weather-source.mjs','social-tool-policy.mjs','social-tool-restrict.mjs','context-policy.mjs'].map(name=>path.join(moduleDir,name));
     if(sources.every(file=>fs.existsSync(file))){
       const revision=crypto.createHash('sha256').update(Buffer.concat(sources.map(file=>fs.readFileSync(file)))).digest('hex').slice(0,16);
       // Revision inputs may grow or move; the Cordis plugin entry stays fixed.
@@ -124,7 +135,7 @@ export function prepare(root = projectRoot) {
     }
     after = /^        port:/m.test(after) ? after.replace(/^        port:.*/m, `        port: ${config.ports.dshPlugin}`) : after.replace(/^(        model:.*)$/m, `$1\n        port: ${config.ports.dshPlugin}`);
     if(migratedMeme&&Object.keys(migratedMeme).length&&!/^        memeSearch:/m.test(after))after=after.replace(/^(        port:.*)$/m,'$1\n        memeSearch: '+JSON.stringify(migratedMeme));
-    if (before !== after) fs.writeFileSync(patchFile, after);
+    if (existingPatch !== after) fs.writeFileSync(patchFile, after);
   }
   // Original WeFlow owns its encrypted configuration in every provider mode.
   return config;

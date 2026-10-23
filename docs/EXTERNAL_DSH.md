@@ -2,7 +2,7 @@
 
 WeChatAgent 安装包不再携带 DSH 桌面程序，也不自动下载或安装 DSH。安装包保留微信桥接插件及 SDK；当前插件验证版本为 0.2.0-rc.2。
 
-1. 在“首次配置 → 安装并连接 DSH”点击“下载安装 DSH”，打开 [官方兼容版本发布页](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.0-rc.2)，选择 Windows 安装程序完成安装。已有可用 DSH 可继续使用。
+1. 在“首次配置 → 安装并连接 DSH”点击“下载安装 DSH”，打开 [DSH 官方下载页面](https://www.deepseek.com/harness/)，选择 Windows 安装程序完成安装。已有可用 DSH 可继续使用。
 2. 选择已安装的 `DeepSeek Harness.exe`，保存设置。也可以手动打开已配置好插件的 DSH，不填写自动启动路径。
 3. 登录自己的模型账号，复制引导中的本机插件路径，在 DSH 插件页面添加并启用。
 4. 从托盘完整退出并重新打开 DSH，再启动 WeChatAgent 服务。模型提供方和模型标识沿用连接设置。

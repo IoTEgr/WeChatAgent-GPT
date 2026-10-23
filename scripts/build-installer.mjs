@@ -7,6 +7,9 @@ import { spawnSync } from 'node:child_process';
 import { buildIcons, embedExecutableIcon } from './build-icons.mjs';
 import { singleDirectoryTemplate } from './installer-directory-page.mjs';
 import { projectRoot as root } from './project-config.mjs';
+import { verifyHookBuild } from './hook-build-policy.mjs';
+
+verifyHookBuild(path.join(root, 'state/hook/native'));
 
 const version = JSON.parse(fs.readFileSync(path.join(root,'package.json'),'utf8')).version;
 const stage = path.join(root, 'state', 'installer-stage');
@@ -44,7 +47,8 @@ for (const name of ['package.json','main.cjs','preload.cjs','shutdown.cjs','stor
 fs.writeFileSync(path.join(appDir, 'package.json'), JSON.stringify({ name: 'wechatagent', productName: 'WeChatAgent', version, description: 'WeChatAgent desktop console', main: 'main.cjs', author: 'WeChatAgent contributors', license: 'SEE THIRD-PARTY-NOTICES.txt' }, null, 2));
 await buildIcons(root, appDir, require('sharp'));
 for (const name of ['LICENSE','LICENSES.md']) add(name);
-for (const name of ['README.md','RELEASE_NOTES.md','docs/DSH_MEME.md','docs/MEMBER_MEMORY.md','docs/DSH_CHAT_ACCESS.md','docs/STICKER_COLLECTION.md','docs/INSTALLER_RELEASE.md']) add(name);
+for (const name of ['README.md','RELEASE_NOTES.md']) add(name);
+addTree('docs', (name, directory) => directory || name.endsWith('.md'));
 add('config/wechatagent.example.json');
 for(const name of ['SESSION_RECOVERY.md','SEND_QUEUE_RECOVERY.md','MEDIA_RECOVERY.md','GROUP_REJOIN.md'])add('docs/'+name);
 const presetNames = fs.readdirSync(path.join(root, 'roles')).filter(name => name.endsWith('.md') && name !== 'README.md');
@@ -58,12 +62,17 @@ add('docs/HOOK_STARTUP_RECOVERY.md');
 add('docs/PORT_STARTUP_RECOVERY.md');
 add('docs/REPLY_PROTOCOL.md');
 add('docs/PROMPT_POLICY.md');
+add('docs/REQUEST_REJECTION.md');
+add('docs/ASSISTANT_MODE.md');
+add('docs/PLUGIN_CATALOG.md');
 add('docs/EXTERNAL_DSH.md');
 add('docs/ACCOUNT_SWITCH.md');
 add('docs/SESSION_GROUPS.md');
+add('scripts/persona-categories.mjs');
+add('docs/PERSONA_CATEGORIES.md');
 add('scripts/hook-client-health.ps1');
 add('scripts/stop-legacy-services.ps1');
-const scriptNames = ['project-config.mjs','extension-status.mjs','bundled-extensions.mjs','update-check.mjs','migrate-io-config.mjs','manage.ps1','console-server.mjs','console-process.mjs','console-powershell.ps1','console-native.ps1','sync-weflow.cjs','hook-onebot.mjs','reader-api.py','reader-requirements.txt','wechat_media.py','wechat_sticker.py','wechat_sticker_send.py','wechat_forwarded.py','resolve-wechat-image.py','list-friend-ids.mjs','manage-dsh-sessions.mjs','launch-hook-wechat.ps1','pin-hook-client.ps1','launch-dsh.ps1','check-runtime.ps1','setup.ps1','build-hook.ps1'];
+const scriptNames = ['wechat_files.py','file-delivery-worker.mjs','project-config.mjs','extension-status.mjs','bundled-extensions.mjs','update-check.mjs','migrate-io-config.mjs','manage.ps1','console-server.mjs','console-process.mjs','console-powershell.ps1','console-native.ps1','sync-weflow.cjs','hook-onebot.mjs','reader-api.py','reader-requirements.txt','wechat_media.py','wechat_sticker.py','wechat_sticker_send.py','wechat_forwarded.py','resolve-wechat-image.py','list-friend-ids.mjs','manage-dsh-sessions.mjs','launch-hook-wechat.ps1','pin-hook-client.ps1','launch-dsh.ps1','check-runtime.ps1','setup.ps1','build-hook.ps1'];
 for (const name of [...scriptNames, 'wechat_group_bindings.py', 'dsh-configuration.mjs', 'process-recovery.mjs', 'process-recovery.ps1', 'check-runtime.py', 'wechat_meme_library.py', 'wechat_sticker_labels.py', 'wechat_image_normalize.py', 'wechat_sticker_collection.py', 'wechat_quote.py', 'text-delivery-store.mjs', 'reader-setup.mjs', 'reader_setup.py', 'reader-account-state.mjs','wechat-account-check.mjs']) add('scripts/' + name);
 addTree('scripts/native-hook');
 for (const name of ['nt_decrypt.py','nt_common.py']) add('components/weflow-cli/scripts/' + name);
@@ -91,6 +100,9 @@ const clientSource = path.join(root, 'state/hook/wechat-4.1.10.27');
 copyFile(path.join(clientSource, 'Weixin.exe'), path.join(vendor, 'wechat/Weixin.exe'));
 copyTree(path.join(clientSource, '4.1.10.27'), path.join(vendor, 'wechat/4.1.10.27'), name => !/\.disabled$|\.log$|\.token$/.test(name));
 for (const name of ['version.dll','build.json']) copyFile(path.join(root, 'state/hook/native', name), path.join(vendor, 'hook', name));
+const pluginTemplate = path.join(project, 'packages/dsh-social-bridge-plugin/cordis.patch.yml');
+fs.writeFileSync(pluginTemplate, fs.readFileSync(pluginTemplate, 'utf8')
+  .replace(/file:\/\/\/[^"'\r\n]*\/dsh-social-bridge-plugin\/([A-Za-z0-9_-]+\.mjs)(?:\?[^"'\r\n]*)?/g, 'dsh-social-bridge-plugin/$1'));
 const fileList = [...new Set(files)].sort();
 const sourceHashes = Object.fromEntries(fileList.map(file => [file, sha(fs.readFileSync(path.join(project,file)))]));
 const desktopHashes = Object.fromEntries(fs.readdirSync(appDir).filter(file=>fs.statSync(path.join(appDir,file)).isFile()).sort().map(file=>[file,sha(fs.readFileSync(path.join(appDir,file)))]));

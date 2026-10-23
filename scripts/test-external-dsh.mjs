@@ -28,7 +28,7 @@ test('external-only upgrades retain the independently configured program instead
 
 test('setup provides one official installation link, program selection and the existing plugin and launch controls',()=>{
  const fields=[];const html=dshInstallCard({header:(title,help)=>'<h2>'+title+'</h2><p>'+help+'</p>',field:(label,key,options)=>{fields.push({label,key,options});return '<input id="fixture-dsh-program">';},pluginPathField:()=>'<button id="copy-plugin-path">复制插件路径</button>'});
- assert.equal(new URL(DSH_INSTALL_URL).hostname,'github.com');assert(DSH_INSTALL_URL.includes('/deepseek-ai/deepseek-harness/releases/'));assert.equal((html.match(/href=/g)??[]).length,1);assert(html.includes('href="'+DSH_INSTALL_URL+'"'));assert(html.includes('target="_blank"'));assert(html.includes('data-action="dsh-open"'));assert(html.includes('copy-plugin-path'));assert.equal(fields[0].key,'runtime.dshDesktop');assert.equal(fields[0].options.browse,'exe');assert(html.includes('不再内置'));
+ assert.equal(DSH_INSTALL_URL,'https://www.deepseek.com/harness/');assert.equal((html.match(/href=/g)??[]).length,1);assert(html.includes('href="'+DSH_INSTALL_URL+'"'));assert(html.includes('target="_blank"'));assert(html.includes('data-action="dsh-open"'));assert(html.includes('copy-plugin-path'));assert.equal(fields[0].key,'runtime.dshDesktop');assert.equal(fields[0].options.browse,'exe');assert(html.includes('不再内置'));
 });
 
 test('missing programs and unavailable plugins report actionable setup instructions',()=>{
