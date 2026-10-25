@@ -66,13 +66,13 @@ export class WechatOneBotAdapter extends BaseAdapter {
       if(error.code!=='TEXT_DELIVERY_UNCONFIRMED'||error.data?.attempted!==true)throw error;
       this.#prune(Date.now());this.recentOutgoing.set(this.#fingerprint(kind,id,content),Date.now()+this.antiLoopTtlMs);
       this.log(`[WeChat] text_delivery_unconfirmed operation=${String(deliveryId??'').slice(0,12)}`);
-      return {accepted:false,attempted:true,delivered:'unconfirmed',deliveryId};
+      return {accepted:false,attempted:true,confirmed:false,delivered:'unconfirmed',deliveryId};
     }
     // The I/O service acknowledges only after a new matching server receipt.
     if (result.data?.receipt !== 'wechat-server-id') throw new Error('WeChat send response has no verified server receipt');
     this.#prune(Date.now());
     this.recentOutgoing.set(this.#fingerprint(kind, id, content), Date.now() + this.antiLoopTtlMs);
-    this.stats.sends++; return { accepted: true, response: result, delivered: 'database-confirmed' };
+    this.stats.sends++; return { accepted: true, confirmed: true, response: result, delivered: 'database-confirmed' };
   }
   async stickerChoices({kind,target,query}){
     const result=await this.server.action('get_sticker_list',{kind,target:String(target),...(typeof query==='string'&&query.trim()?{query:query.slice(0,500)}:{})});

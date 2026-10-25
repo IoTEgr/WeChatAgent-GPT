@@ -43,7 +43,8 @@
       "labelCache": true,
       "chats": {},
       "collectEnabled": true,
-      "shareEnabled": true
+      "shareEnabled": true,
+      "candidateLimit": 8
     },
     "search": {
       "enabled": false,
@@ -81,6 +82,31 @@
     },
     "memberMemory": {
       "enabled": true,
+      "chats": {}
+    },
+    "history": {
+      "enabled": true,
+      "recentMessages": 8,
+      "recentChars": 4000,
+      "coldWakeMinutes": 30,
+      "summaryChars": 3200,
+      "summaryInputChars": 24000,
+      "maxSessionTurns": 32,
+      "maxSessionEvents": 1500,
+      "maxContextTokens": 20000,
+      "maxContextChars": 64000,
+      "maxAgeHours": 168,
+      "chats": {},
+      "mode": "window",
+      "restoreHistory": true,
+      "windowStrategy": "append"
+    },
+    "replyLayout": {
+      "maxMessages": 2
+    },
+    "fishNotebook": {
+      "enabled": false,
+      "writeTime": "21:30",
       "chats": {}
     }
   },
