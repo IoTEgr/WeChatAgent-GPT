@@ -2,11 +2,11 @@
   "profile": "wechatagent-source-and-installer-release",
   "status": "verified-local-build",
   "version": "0.4.1",
-  "date": "2026-10-25",
+  "date": "2026-10-26",
   "repository": "sourcepro5/WeChatAgent",
   "suggestedTag": "v0.4.1",
   "publication": "local-build-only",
-  "buildId": "0c66dea575041957",
+  "buildId": "c30bba665538d5d4",
   "runtimeRevision": "db3bce768f85",
   "wechatVersion": "4.1.10.27",
   "dshSdkVersion": "0.2.0-rc.2",
@@ -31,7 +31,7 @@
     "Launch-Hook-WeChat.cmd": "8ebbc18cd1c6a560262122e679eb5d12197a576c2b601915e07008bd284eabd9",
     "QQ.jpg": "bf5b2aadb62616d08de1dacea37ad325f8c3a64459ba7ea90e58ecee54d4594e",
     "README.md": "8c57607282048aea4122227be455a022cd8eef1fcbcb3868de0563f99c6f73ef",
-    "RELEASE_NOTES.md": "e6f7c1a3ee8394b2b464d0e01e8882b7d5e03afd4242c443cef9a2be7636dfb1",
+    "RELEASE_NOTES.md": "5873754bebfa0c9d9e006a9927329de96fd8701238212137af9a4fc0bd7ee63a",
     "Restart-WeChatAgent.cmd": "5b3fd7ff0728df373160ea607da16113f49e65206ef2ecbdf0e858ad8d8ed984",
     "Setup-WeChatAgent.cmd": "9c71457e8f3fc2bbc5a92e9f819f90387445795c9d40f5de20a0538726d08323",
     "Status-WeChatAgent.cmd": "4edf49d9d956ca94f87354dd2c0ca1cc3279405c12b5b66b1813902e0a757ea5",
@@ -80,7 +80,7 @@
     "components/qq-bridge/src/onebot/reverse-ws-server.js": "bacfc0ef0f0f23889eb3d86de0e621e43e080ddb3b314c4faf99a89adafe962e",
     "components/qq-bridge/src/role-card.js": "8bc619b3e2f25e250f0c9c770280383cee03d03ebf62f1c4569c57854c6b9768",
     "components/qq-bridge/src/safe-fetch.js": "4dc21516904bbdd9771aa85d388985b4c298ec05ed244f06909078b6b70e108a",
-    "components/qq-bridge/src/social-bridge.js": "1ca9faa204cc834f74054e5b48ac9a23e644735388c1e41faf134b4d2592f14c",
+    "components/qq-bridge/src/social-bridge.js": "9c6da06d1bcefe5da05e1fbf871528b69538085fcca2e89c8a5d09240b2cfc82",
     "components/weflow-cli/AGENTS.md": "4415614c12f5858a7af63688b726ef1fa3e83b1c0e268ca035ee0f9ead595e3b",
     "components/weflow-cli/LICENSE": "5ca2920d4f56954100c8f365461aba7b6c6154da49734f7b2703d9275ad49d11",
     "components/weflow-cli/README.md": "faf0902217b17b4142e46aeffaa7e36181abe4ee06c58f5e5a2bb28efb1f069f",
@@ -345,6 +345,7 @@
     "scripts/test-assistant-mode.mjs": "472d3627a9571eca5a620a960c7a8e6247007db124323877f99e7f1e876ae39c",
     "scripts/test-assistant-notice-delivery.mjs": "6e665791618939d0e321e30f278d11b38135a91f0bc3c3d111965527fb1cc872",
     "scripts/test-assistant-thinking-feedback.mjs": "01e5356ef54055564dd612ce1d6f3aa328de1c17faaeb11c56d5eb35e4b29276",
+    "scripts/test-bridge-entry.mjs": "08f0e9cb52996d36fdc7891e8da7ca1b88634b97352b3cc5bbd56585b572dbf8",
     "scripts/test-cost-next.mjs": "d9a5c122fe73084e7fe084a235a1a7cc7dda6ea77d0048a83c17af053ce4ee35",
     "scripts/test-data-storage.mjs": "abd00dfd6c371a1b8b82229900c3ccefc58e520075d7c9d1d215887368b2d8a9",
     "scripts/test-desktop-lifecycle.mjs": "4c211011bb412eb48a2b5811f83cd39e34e00c253072fcd5cf1308422ab9653c",
@@ -420,7 +421,7 @@
   },
   "verification": {
     "publicRegression": {
-      "passed": 518,
+      "passed": 519,
       "failed": 0,
       "skipped": 0
     },
@@ -436,10 +437,12 @@
     "testWeChatMessagesSent": 0,
     "installedOverCurrentApplication": false,
     "targetDeviceValidated": false,
-    "codeSigned": false
+    "codeSigned": false,
+    "packagedBridgeEntry": true
   },
   "validationLimits": [
     "Local isolated deployment and upgrade fixtures were verified.",
     "The personal application was not replaced, and a real account on a second computer was not tested."
-  ]
+  ],
+  "hotfix": "native-root-reference"
 }
