@@ -1,3 +1,5 @@
+import {hasVoiceControl,VOICE_TIMING} from '../../core/voice-protocol.js';
+import {internalInteraction} from '../../core/interaction-protocol.js';
 import crypto from 'node:crypto';
 import { BaseAdapter } from '../base-adapter.js';
 import { ReverseOneBotServer } from '../../onebot/reverse-ws-server.js';
@@ -49,7 +51,7 @@ export class WechatOneBotAdapter extends BaseAdapter {
 
   async start() { await this.server.start(); }
   async stop() { await this.server.stop(); }
-  async sendText({ kind, target, text, deliveryId, source, contextId }) {
+  async sendText({ kind, target, text, deliveryId, source, contextId, voiceAnchor, voiceObservations }) {
     if (kind !== 'private' && kind !== 'group') throw new TypeError('invalid WeChat kind');
     const content = String(text ?? '').trim();
     if (!content) throw new TypeError('empty WeChat message');
@@ -57,11 +59,14 @@ export class WechatOneBotAdapter extends BaseAdapter {
     // Only synthetic numeric IDs resolved by the WeChat I/O service are accepted.
     if (!Number.isSafeInteger(id) || id <= 0) throw new TypeError('WeChat target must be a synthetic integer ID');
     const action = kind === 'group' ? 'send_group_msg' : 'send_private_msg';
+    const interaction=internalInteraction(content);
     const params = { [kind === 'group' ? 'group_id' : 'user_id']: id,
-      message: [{ type: 'text', data: { text: content } }],...(deliveryId?{wechatagent_delivery_id:deliveryId}:{}),
+      message: interaction?[{type:'wechat_interaction',data:interaction}]:[{ type: 'text', data: { text: content } }],...(deliveryId?{wechatagent_delivery_id:deliveryId}:{}),
+      ...(hasVoiceControl(content)&&voiceAnchor?{wechatagent_voice_anchor:voiceAnchor}:{}),
+      ...(hasVoiceControl(content)&&voiceObservations?{wechatagent_voice_observations:voiceObservations}:{}),
       ...(source==='proactive'?{wechatagent_source:'proactive',wechatagent_context_id:contextId}:{}) };
     let result;
-    try{result=await this.server.action(action,params);}
+    try{result=await this.server.action(action,params,hasVoiceControl(content)?{timeoutMs:VOICE_TIMING.actionMs}:interaction?{timeoutMs:30000}:{});}
     catch(error){
       if(error.code!=='TEXT_DELIVERY_UNCONFIRMED'||error.data?.attempted!==true)throw error;
       this.#prune(Date.now());this.recentOutgoing.set(this.#fingerprint(kind,id,content),Date.now()+this.antiLoopTtlMs);
@@ -69,15 +74,16 @@ export class WechatOneBotAdapter extends BaseAdapter {
       return {accepted:false,attempted:true,confirmed:false,delivered:'unconfirmed',deliveryId};
     }
     // The I/O service acknowledges only after a new matching server receipt.
-    if (result.data?.receipt !== 'wechat-server-id') throw new Error('WeChat send response has no verified server receipt');
+    if (result.data?.receipt !== 'wechat-server-id'&&!(interaction?.action==='pat'&&result.data?.receipt==='wechat-server-ack'&&result.data?.media_type==='wechat-pat')) throw new Error('WeChat send response has no verified server receipt');
     this.#prune(Date.now());
     this.recentOutgoing.set(this.#fingerprint(kind, id, content), Date.now() + this.antiLoopTtlMs);
-    this.stats.sends++; return { accepted: true, confirmed: true, response: result, delivered: 'database-confirmed' };
+    this.stats.sends++; return { accepted: true, confirmed: true, response: result, delivered: interaction?.action==='pat'?'server-confirmed':'database-confirmed',...(typeof result.data?.spoken_text==='string'?{spokenText:result.data.spoken_text}:{}) };
   }
   async stickerChoices({kind,target,query}){
     const result=await this.server.action('get_sticker_list',{kind,target:String(target),...(typeof query==='string'&&query.trim()?{query:query.slice(0,500)}:{})});
     return result.data?.enabled?(result.data.stickers??[]):[];
   }
+  async interactionCapabilities({kind,target}){return (await this.server.action('get_interaction_capabilities',{kind,target:String(target)})).data??{};}
   async sendSticker({kind,target,id,deliveryId,receiptOnly=false,deferReceipt=false,deadlineAt,abandon=false}){
     if(!['private','group'].includes(kind)||!/^[a-f0-9]{64}$/.test(id))throw new TypeError('invalid sticker target');
     let result;

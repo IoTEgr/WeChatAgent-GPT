@@ -60,3 +60,5 @@ test('system preset defers message count to the selected layout and proactive gu
 test('one format repair never duplicates layout guidance and honours a disabled layout',async()=>{
  for(const allowTextParts of [true,false]){let prompt;const result=await resolveSocialDecision({rawOutput:'invalid fixture',key,metadata:{},allowTextParts,decide:async(_key,value)=>{prompt=value;return 'RESPOND: 正常回复';}});assert.equal(result.result.text,'正常回复');assert(prompt.split(CHAT_MESSAGE_LAYOUT_NOTICE).length-1<=(allowTextParts?1:0));assert.equal(prompt.split(SOCIAL_PROTOCOL_NOTICE).length-1,1);}
 });
+
+test('ordinary roleplay is creative chat while persistent configuration stays protected',t=>{const root=fixture(t),instructions=stableChatInstructions(root,key);assert(instructions.includes('日常角色扮演'));assert(instructions.includes('故事创作'));assert(instructions.includes('配置或权限'));});

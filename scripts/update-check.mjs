@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-export const UPDATE_REPOSITORY='sourcepro5/WeChatAgent';
+export const UPDATE_REPOSITORY='IoTEgr/WeChatAgent-GPT';
 const releaseRoot='https://github.com/'+UPDATE_REPOSITORY+'/releases/';
 const version=value=>{const match=/^(?:v)?(\d+)\.(\d+)\.(\d+)(-fix)?$/.exec(String(value??''));return match?{parts:match.slice(1,4).map(Number),fix:!!match[4],label:match.slice(1,4).join('.')+(match[4]??'')}:null;};
 // The product's "-fix" label denotes a correction after the base release.

@@ -55,6 +55,12 @@ const presetNames = fs.readdirSync(path.join(root, 'roles')).filter(name => name
 for (const name of presetNames) add('roles/' + name);
 addTree('public/console');
 add('scripts/wechat_sticker_manager.py');
+add('scripts/local_sticker_library.py');
+add('scripts/reader_message_sync.py');
+add('scripts/wechat_sticker_packs.py');
+add('scripts/wechat_sticker_pack_codec.py');
+add('scripts/search-public-dns.mjs');
+add('docs/STICKER_PACKS.md');
 add('docs/STICKER_MANAGER.md');
 add('docs/EXIT_SHUTDOWN.md');
 add('docs/DATA_STORAGE.md');
@@ -73,13 +79,26 @@ add('docs/PERSONA_CATEGORIES.md');
 add('scripts/memory-console.mjs');
 add('scripts/memory-console-worker.mjs');
 add('docs/MEMORY_VIEW.md');
+add('docs/LONG_TERM_MEMORY.md');
 add('scripts/fish-notebook-console.mjs');
 add('docs/FISH_NOTEBOOK.md');
 add('scripts/hook-client-health.ps1');
 add('scripts/stop-legacy-services.ps1');
-const scriptNames = ['wechat_files.py','file-delivery-worker.mjs','project-config.mjs','extension-status.mjs','bundled-extensions.mjs','update-check.mjs','migrate-io-config.mjs','manage.ps1','console-server.mjs','console-process.mjs','console-powershell.ps1','console-native.ps1','sync-weflow.cjs','hook-onebot.mjs','reader-api.py','reader-requirements.txt','wechat_media.py','wechat_sticker.py','wechat_sticker_send.py','wechat_forwarded.py','resolve-wechat-image.py','list-friend-ids.mjs','manage-dsh-sessions.mjs','launch-hook-wechat.ps1','pin-hook-client.ps1','launch-dsh.ps1','check-runtime.ps1','setup.ps1','build-hook.ps1'];
+addTree('scripts/tts',(name,dir)=>dir||/\.(mjs|py)$/.test(name));
+const scriptNames = ['wechat_files.py','file-delivery-worker.mjs','project-config.mjs','extension-status.mjs','bundled-extensions.mjs','update-check.mjs','migrate-io-config.mjs','manage.ps1','console-server.mjs','console-process.mjs','console-powershell.ps1','console-native.ps1','sync-weflow.cjs','hook-onebot.mjs','voice-sender.mjs','voice-login.mjs','reader-api.py','reader-requirements.txt','wechat_media.py','wechat_sticker.py','wechat_sticker_send.py','wechat_forwarded.py','resolve-wechat-image.py','list-friend-ids.mjs','manage-dsh-sessions.mjs','launch-hook-wechat.ps1','pin-hook-client.ps1','launch-dsh.ps1','check-runtime.ps1','setup.ps1','build-hook.ps1'];
 for (const name of [...scriptNames, 'wechat_group_bindings.py', 'dsh-configuration.mjs', 'process-recovery.mjs', 'process-recovery.ps1', 'check-runtime.py', 'wechat_meme_library.py', 'wechat_sticker_labels.py', 'wechat_image_normalize.py', 'wechat_sticker_collection.py', 'wechat_quote.py', 'text-delivery-store.mjs', 'reader-setup.mjs', 'reader_setup.py', 'reader-account-state.mjs','wechat-account-check.mjs']) add('scripts/' + name);
 addTree('scripts/native-hook');
+for(const name of ['interaction-sender.mjs','wechat_interaction_native.py','wechat_interaction_service.py','wechat_mention_native.py','build-interactions.ps1','build-interaction-service.ps1','build-mentions.ps1','voice-context.mjs'])add('scripts/'+name);
+const serviceRoot=path.join(root,'assets/native-interactions'),serviceBuild=JSON.parse(fs.readFileSync(path.join(serviceRoot,'build.json'),'utf8').replace(/^\uFEFF/,'')),serviceValidation=JSON.parse(fs.readFileSync(path.join(serviceRoot,'validated.json'),'utf8').replace(/^\uFEFF/,''));
+if(serviceBuild.backend!=='native-interaction-service-v1'||serviceBuild.sha256!==sha(fs.readFileSync(path.join(serviceRoot,'WeChatInteractionService.dll')))||serviceBuild.sourceSha256!==sha(fs.readFileSync(path.join(root,'scripts/native-hook/interaction_service.cpp')))||serviceValidation.sha256!==serviceBuild.sha256||JSON.stringify(serviceValidation.features)!=='["quote","pat","senderEcho"]')throw new Error('Build and validate the native interaction service before packaging.');
+for(const name of ['WeChatInteractionService.dll','build.json','validated.json']){const relative='assets/native-interactions/'+name;copyFile(path.join(serviceRoot,name),path.join(project,relative));files.push(relative);}
+const interactionRoot=path.join(root,'state/hook/interactions'),interactionBuild=JSON.parse(fs.readFileSync(path.join(interactionRoot,'build.json'),'utf8').replace(/^\uFEFF/,''));
+if(interactionBuild.backend!=='pat-cgi-wire-v1'||JSON.stringify(interactionBuild.allowedCgi)!=='[849]'||interactionBuild.sha256!==sha(fs.readFileSync(path.join(interactionRoot,'WeChatInteractions.dll')))||interactionBuild.sourceSha256!==sha(fs.readFileSync(path.join(root,'scripts/native-hook/interaction_sender.cpp'))))throw new Error('Build the verified pat-only interaction companion before packaging.');
+for(const name of ['WeChatInteractions.dll','build.json']){const relative='assets/interactions/'+name;copyFile(path.join(interactionRoot,name),path.join(project,relative));files.push(relative);}
+const mentionRoot=path.join(root,'state/hook/mentions'),mentionBuild=JSON.parse(fs.readFileSync(path.join(mentionRoot,'build.json'),'utf8').replace(/^\uFEFF/,''));
+if(mentionBuild.backend!=='text-atlist-v2'||mentionBuild.sha256!==sha(fs.readFileSync(path.join(mentionRoot,'WeChatMentions.dll')))||mentionBuild.sourceSha256!==sha(fs.readFileSync(path.join(root,'scripts/native-hook/mention_sender.cpp'))))throw new Error('Build the matching native mention component before packaging.');
+for(const name of ['WeChatMentions.dll','build.json']){const relative='assets/mentions/'+name;copyFile(path.join(mentionRoot,name),path.join(project,relative));files.push(relative);}
+add('docs/PAT_MESSAGES.md');
 for (const name of ['nt_decrypt.py','nt_common.py']) add('components/weflow-cli/scripts/' + name);
 add('components/weflow-cli/LICENSE');
 add('components/weflow-cli/resources/key/win32/x64/wx_key.dll');
@@ -112,7 +131,7 @@ if (!fs.existsSync(path.join(stage, 'runtime/python/python.exe'))) throw new Err
 const clientSource = path.join(root, 'state/hook/wechat-4.1.10.27');
 copyFile(path.join(clientSource, 'Weixin.exe'), path.join(vendor, 'wechat/Weixin.exe'));
 copyTree(path.join(clientSource, '4.1.10.27'), path.join(vendor, 'wechat/4.1.10.27'), name => !/\.disabled$|\.log$|\.token$/.test(name));
-for (const name of ['version.dll','build.json']) copyFile(path.join(root, 'state/hook/native', name), path.join(vendor, 'hook', name));
+for (const name of ['version.dll','build.json',...(fs.existsSync(path.join(root,'state/hook/native/WeChatVoice.dll'))?['WeChatVoice.dll']:[])]) copyFile(path.join(root, 'state/hook/native', name), path.join(vendor, 'hook', name));
 const pluginTemplate = path.join(project, 'packages/dsh-social-bridge-plugin/cordis.patch.yml');
 fs.writeFileSync(pluginTemplate, fs.readFileSync(pluginTemplate, 'utf8')
   .replace(/file:\/\/\/[^"'\r\n]*\/dsh-social-bridge-plugin\/([A-Za-z0-9_-]+\.mjs)(?:\?[^"'\r\n]*)?/g, 'dsh-social-bridge-plugin/$1'));

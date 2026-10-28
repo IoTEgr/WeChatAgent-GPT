@@ -92,10 +92,11 @@ test('a rejected vision turn falls back once without repeating search tools and 
   assert.equal(sent.length,2);assert.equal(buffer.unread('wechat:private:123').length,0);assert.equal(f.requests.length,3);assert.equal(engine.decisions.size,0);
 });
 
-test('a vision timeout waits briefly for cancellation and the text fallback never loops',async t=>{
+test('a vision timeout waits briefly for cancellation while preserving the image on its bounded retry',async t=>{
   const f=await fixture(t,[{status:503,body:{error:'agent_unavailable',detail:'agent_timeout'}},{status:503,body:{error:'agent_unavailable',detail:'session_busy'}},{status:200,body:{text:'RESPOND: 已恢复'}}]);
   assert.equal(await f.client.followup('wechat:private:123','fixture',{images:[{id:'a'.repeat(64)}]}),'RESPOND: 已恢复');
-  assert.deepEqual(f.requests.map(r=>r.images.length),[1,0,0]);
+  assert.deepEqual(f.requests.map(r=>r.images.length),[1,1,1]);
+  assert(f.requests.every(request=>request.images[0].id==='a'.repeat(64)));
   const bad=await fixture(t,[{status:502,body:{error:'turn_failed',code:'INVALID_REQUEST'}}]);
   await assert.rejects(bad.client.followup('wechat:private:123','fixture',{images:[{id:'a'.repeat(64)}]}));assert.equal(bad.requests.length,2);
 });

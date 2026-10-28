@@ -1,0 +1,18 @@
+{
+  "targetVersion": "4.1.10.27",
+  "sha256": "a54fbb2608d8e46ae74d1d6a7e2e8d0f9c3186ca8fe427b0f1976ccab9145e05",
+  "features": [
+    "quote",
+    "pat",
+    "senderEcho"
+  ],
+  "method": "native-coroutine-query-and-business-service",
+  "acceptedOn": "2026-10-27",
+  "acceptance": {
+    "patNativeAcknowledgment": true,
+    "quoteSenderDisplay": true,
+    "quoteServerReceipt": true,
+    "quoteReferenceServerId": true,
+    "patSenderDisplay": true
+  }
+}

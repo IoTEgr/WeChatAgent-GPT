@@ -1,6 +1,7 @@
 import {feedbackSnapshot,saveFeedback} from '../packages/dsh-social-bridge-plugin/assistant-feedback.mjs';
 import {createMemoryConsole} from './memory-console.mjs';
 import {fishNotebookSnapshot} from './fish-notebook-console.mjs';
+import {createVoiceLogin} from './voice-login.mjs';
 import fs from 'node:fs';
 import {createPersonaCategories} from './persona-categories.mjs';
 import {createUpdateChecker} from './update-check.mjs';
@@ -92,6 +93,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
   const publicDir = path.join(projectRoot, 'public', 'console');
   const pluginInstaller=new PluginInstaller(root);
   const personaCategories=createPersonaCategories(root);
+  const voiceLogin=createVoiceLogin(root);
   const categorySnapshot=()=>{try{return personaCategories.read();}catch(error){return {categories:[],assignments:{},revision:null,error:error.message};}};
   const configFile = path.join(root, 'config', 'wechatagent.json');
   const preferenceFile = path.join(root, 'state', 'console-state.json');
@@ -155,15 +157,15 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
     if (!io.reader_token) throw fault('读取连接尚未准备，请先启动服务。', 503);
     return remote(`http://127.0.0.1:${config.ports.weflow}${route}`, io.reader_token, 5000);
   }
-  async function stickerManager(route,body) {
+  async function stickerManager(route,body,local=false) {
     const {config}=snapshot(),io=optionalJson(path.join(root,'state','wechat-io-config.json'));
     if(!io.reader_token)throw fault('请先连接微信并启动读取服务，再管理表情包。',503);
     let response;
-    try{response=await fetchImpl(`http://127.0.0.1:${config.ports.weflow}/api/v1/stickers/manage${route}`,{method:body===undefined?'GET':'POST',headers:{Authorization:'Bearer '+io.reader_token,...(body===undefined?{}:{'Content-Type':'application/json'})},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(15000)});}
+    try{response=await fetchImpl(`http://127.0.0.1:${config.ports.weflow}/api/v1/stickers/${local?'local-library':'manage'}${route}`,{method:body===undefined?'GET':'POST',headers:{Authorization:'Bearer '+io.reader_token,...(body===undefined?{}:{'Content-Type':'application/json'})},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(15000)});}
     catch{throw fault('表情池暂时无法连接，请确认读取服务已启动。',503);}
     const data=await response.json();
     if(!response.ok){
-      const messages={STICKER_MANAGER_ACCOUNT_CHANGED:'微信账号已变化，请刷新表情管理页面后重试。',STICKER_MANAGER_CHANGED:'表情池已更新，请刷新列表后重试。',STICKER_MANAGER_BUSY:'已有图片正在导入，请稍后重试。',STICKER_MANAGER_FULL:'表情池已满 50 张，请先删除不需要的表情再添加。',STICKER_MANAGER_TOO_LARGE:'每张图片不能超过 8 MB。',STICKER_MANAGER_INVALID_IMAGE:'图片无效或过大。支持 GIF、PNG、JPG、WebP，最多 64 帧、边长不超过 4096 像素。',STICKER_MANAGER_INVALID:'请检查名称、描述和标签：名称与描述最多 120 字，标签最多 6 个、每个最多 16 字。',STICKER_MANAGER_NOT_FOUND:'这张表情已移除，请刷新列表。',STICKER_MANAGER_INTEGRITY:'图片校验失败，原有表情未修改。'};
+      const messages={STICKER_MANAGER_ACCOUNT_CHANGED:'微信账号已变化，请刷新表情管理页面后重试。',STICKER_MANAGER_CHANGED:'表情池已更新，请刷新列表后重试。',STICKER_MANAGER_BUSY:'已有图片正在导入，请稍后重试。',STICKER_MANAGER_FULL:local?'本地图库已达 10000 张容量，请移除不再需要的图片。':'表情池已满 50 张，请先删除不需要的表情再添加。',STICKER_MANAGER_TOO_LARGE:'每张图片不能超过 8 MB。',STICKER_MANAGER_INVALID_IMAGE:local?'图片无效或过大。支持 GIF、PNG、JPG、WebP；GIF 最多 1200 帧、总像素不超过 1.6 亿，边长不超过 4096。':'图片无效或过大。支持 GIF、PNG、JPG、WebP，最多 64 帧、边长不超过 4096 像素。',STICKER_MANAGER_INVALID:'请检查名称、描述和标签：名称与描述最多 120 字，标签最多 6 个、每个最多 16 字。',STICKER_MANAGER_NOT_FOUND:'这张表情已移除，请刷新列表。',STICKER_MANAGER_INTEGRITY:'图片校验失败，原有表情未修改。'};
       throw fault(messages[data.error]??(response.status===404?'读取服务尚未加载表情管理功能，请退出重开 WeChatAgent 并重启服务。':'表情管理暂时不可用，请查看读取服务日志。'),[400,404,409,413].includes(response.status)?response.status:503);
     }
     return data;
@@ -385,8 +387,10 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
         assets['/updates.js']=['updates.js','text/javascript; charset=utf-8'];
         for(const file of ['workspace-layout.js','layout-model.mjs','session-usage.js'])assets['/'+file]=[file,'text/javascript; charset=utf-8'];
         assets['/workspace-layout.css']=['workspace-layout.css','text/css; charset=utf-8'];
+        assets['/voice-settings.js']=['voice-settings.js','text/javascript; charset=utf-8'];assets['/live-voices.mjs']=['live-voices.mjs','text/javascript; charset=utf-8'];
         assets['/assistant-feedback.js']=['assistant-feedback.js','text/javascript; charset=utf-8'];
         assets['/memory-view.js']=['memory-view.js','text/javascript; charset=utf-8'];assets['/memory-view.css']=['memory-view.css','text/css; charset=utf-8'];
+        assets['/long-term-memory.js']=['long-term-memory.js','text/javascript; charset=utf-8'];
         assets['/fish-notebook.js']=['fish-notebook.js','text/javascript; charset=utf-8'];assets['/fish-notebook.css']=['fish-notebook.css','text/css; charset=utf-8'];
         assets['/conversation-settings.mjs']=['conversation-settings.mjs','text/javascript; charset=utf-8'];
         assets['/dsh-catalog.mjs']=['dsh-catalog.mjs','text/javascript; charset=utf-8'];
@@ -401,14 +405,23 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
       }
       if (req.method === 'GET' && route === '/api/info') return reply(200, { project: 'WeChatAgent Console', root, version: 1, token: csrf });
       if (req.headers['x-console-token'] !== csrf) throw fault('控制台连接已更新，请刷新页面。', 401);
+      if(req.method==='GET'&&route==='/api/voice/login')return reply(200,await voiceLogin.status());
       if(req.method==='GET'&&route==='/api/updates')return reply(200,await updates.check());
       if(req.method==='GET'&&route==='/api/assistant-feedback')return reply(200,feedbackSnapshot(root));
       if(req.method==='GET'&&route==='/api/memory')return reply(200,memoryView.overview());
       if(req.method==='GET'&&route==='/api/fish-notebook')return reply(200,fishNotebookSnapshot(root,snapshot(),url.searchParams));
       if(req.method==='GET'&&route==='/api/memory/members')return reply(200,memoryView.members(url.searchParams));
       if(req.method==='GET'&&route==='/api/memory/summaries')return reply(200,await memoryView.summaries(url.searchParams));
+      if(req.method==='GET'&&route==='/api/memory/long-term')return reply(200,memoryView.longTerm(url.searchParams));
       if (req.method === 'GET' && route === '/api/config') return reply(200, { ...snapshot(), ...optionalJson(preferenceFile) });
       if(req.method==='GET'&&route==='/api/sticker-pool')return reply(200,await reader('/api/v1/stickers/pool-status'));
+      if(req.method==='GET'&&['/api/sticker-packs','/api/sticker-packs/items','/api/sticker-packs/search'].includes(route))return reply(200,await reader('/api/v1'+route.slice(4)+url.search));
+      if(req.method==='GET'&&route==='/api/local-sticker-library')return reply(200,await stickerManager('',undefined,true));
+      if(req.method==='GET'&&route==='/api/local-sticker-library/image'){
+        const id=url.searchParams.get('id'),scope=url.searchParams.get('scope');
+        if(!/^[a-f0-9]{64}$/.test(id??'')||!/^[a-f0-9]{64}$/.test(scope??''))throw fault('请选择当前账号中的表情。');
+        return reply(200,await stickerManager('/image?id='+id+'&scope='+scope+'&animated='+(url.searchParams.get('animated')==='1'?'1':'0'),undefined,true));
+      }
       if(req.method==='GET'&&route==='/api/sticker-manager')return reply(200,await stickerManager(''));
       if(req.method==='GET'&&route==='/api/sticker-manager/image'){
         const id=url.searchParams.get('id'),scope=url.searchParams.get('scope');
@@ -486,10 +499,11 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
       }
       if (req.method !== 'POST') throw fault('接口不存在。', 404);
       if (!req.headers['content-type']?.startsWith('application/json')) throw fault('请使用控制台表单。', 415);
-      const body = await readBody(req,['/api/sticker-manager/import','/api/plugins/inspect'].includes(route)?11300000:128*1024);
+      const body = await readBody(req,['/api/sticker-manager/import','/api/local-sticker-library/import','/api/plugins/inspect'].includes(route)?11300000:128*1024);
       if(route==='/api/updates/check')return reply(200,await updates.check({force:true}));
       if (route === '/api/jobs') return reply(202, startJob(body));
       assertIdle();
+      if(route==='/api/memory/long-term')return reply(200,memoryView.updateLongTerm(body));
       if(route==='/api/plugins/inspect')return reply(200,pluginInstaller.inspect(body));
       if(route==='/api/plugins/install')return reply(200,pluginInstaller.install(body));
       if(route==='/api/plugins/cancel')return reply(200,pluginInstaller.cancel(body.ticket));
@@ -503,6 +517,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
         if(route==='/api/fish-notebook/write'){if(!current.effectiveEnabled)throw fault('请先安装并为此聊天启用鱼的记事本插件。');const result=await plugin('/fish-notebook/write',{conversationKey:current.conversationKey});if(!result.ok)throw fault('日记暂未写成，请确认 DSH 已加载新版插件宿主后重试。',503);return reply(200,{ok:true});}
         throw fault('鱼的记事本已改为可选插件，请在插件配置中设置开关、时间和聊天范围。',410);
       }
+      if(['/api/local-sticker-library/import','/api/local-sticker-library/edit','/api/local-sticker-library/delete'].includes(route))return reply(200,await stickerManager('/'+route.split('/').at(-1),body,true));
       if(['/api/sticker-manager/import','/api/sticker-manager/edit','/api/sticker-manager/delete'].includes(route))return reply(200,await stickerManager('/'+route.split('/').at(-1),body));
       if(/^\/api\/session-groups\/(create|rename|delete|move)$/.test(route))return reply(200,await plugin(route.slice('/api'.length),body));
       if(route==='/api/group-bindings'){
@@ -567,6 +582,7 @@ export function createConsole({ root = projectRoot, port = 3210, runner, readerS
         const previous = snapshot();
         if (body.revision !== previous.revision) throw fault('配置已在其他窗口更新，请重新载入后再保存。', 409);
         const config = validateConsoleConfig(body.config, root);
+        if(config.wechat.voice?.enabled===true&&!(await voiceLogin.status()).configured)throw fault('请先在本机 Codex 中登录要使用的 ChatGPT 账号，再启用 GPT-Live 语音。');
         if (Object.values(config.ports).includes(boundPort) || Number(new URL(config.hook.baseUrl).port || 80) === boundPort) throw fault('服务端口不能与当前控制台端口重复。');
         backup(configFile); atomic(configFile, config);
         const withoutStickers=value=>{const copy=structuredClone(value);delete copy.wechat.fishNotebook;delete copy.wechat.replyLayout;delete copy.wechat.stickers;delete copy.wechat.search;delete copy.wechat.webReader;delete copy.wechat.proactive;delete copy.wechat.context;delete copy.wechat.chatModes;delete copy.wechat.dshAccess;delete copy.wechat.memeLibrary;delete copy.wechat.assistant;return copy;};

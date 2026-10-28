@@ -26,6 +26,7 @@ from urllib.parse import parse_qs, urlsplit
 import xml.etree.ElementTree as ET
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from reader_message_sync import MessageSync
 from wechat_files import FILE_TYPE, parse_file_message, FileCatalog
 from wechat_media import clean_account_wxid, image_cache_current
 from wechat_forwarded import FORWARD_TYPE, parse_forwarded_record
@@ -35,6 +36,8 @@ from wechat_sticker import emoji_attributes, resolve_sticker_bytes, sticker_imag
 from wechat_sticker_labels import StickerLabels, clean_label
 from wechat_sticker_collection import StickerCollection
 from wechat_sticker_manager import StickerManager, ManagerError
+from local_sticker_library import LocalStickerLibrary
+from wechat_sticker_packs import PackSendResources, InstalledStickerPacks, StickerPackError, sticker_pack_response, BASE_ROUTE as STICKER_PACK_ROUTE
 from wechat_meme_library import import_library_sticker,inspect_library_sticker
 from wechat_group_bindings import GroupBindings, group_username
 
@@ -190,6 +193,8 @@ class Reader:
         self.lock = threading.Lock()
         self.seen = OrderedDict()
         self.started_at = int(time.time())
+        self.message_sync = MessageSync(self, self.started_at, persist=not metadata_readonly)
+        self.push_backlog = OrderedDict()
         self.last_poll = 0
         self.last_error = ''
         self.pushed = 0
@@ -205,6 +210,17 @@ class Reader:
         self.sticker_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         self.sticker_labels = StickerLabels(self.root/'state/stickers/labels.json')
         self.sticker_collection = StickerCollection(self.root,self.account,self.own_wxid,self.sticker_account_active)
+        self.local_sticker_library=LocalStickerLibrary(self.root,self.account,self.own_wxid,self.sticker_account_active)
+        self.installed_sticker_packs = InstalledStickerPacks(self.account, self.open_sticker_pack_database,
+            active=self.sticker_account_active, allowed=self.sticker_pack_chat_allowed, local_library=self.local_sticker_library)
+        from wechat_sticker_pack_codec import PackImageDecoder
+        project = read_json(self.root/'config/wechatagent.json')
+        hook = project.get('hook', {})
+        executable = (self.root/hook.get('wechatExecutable', '')).resolve()
+        if hook.get('expectedVersion') == '4.1.10.27' and executable.is_file():
+            self.installed_sticker_packs.decoder = PackImageDecoder(self.account, executable)
+            self.pack_send_resources = PackSendResources(self.sticker_collection, self.installed_sticker_packs)
+            self.installed_sticker_packs.resources = self.pack_send_resources
         self.sticker_review_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         self.sticker_review_job = None
         self.image_error = ''
@@ -371,6 +387,7 @@ class Reader:
             # Preserve complete text: the upstream CLI display truncates to 200.
             table = 'Msg_' + hashlib.md5(talker.encode()).hexdigest()
             for message in data.get('messages', []):
+                message['wechatagentMessageId'] = hashlib.sha256(json.dumps([talker, message.get('serverId'), message.get('localId'), message.get('createTime')], separators=(',', ':')).encode()).hexdigest()
                 if message.get('localType') not in (1, PAT_TYPE, 49, FORWARD_TYPE, QUOTE_TYPE, 47, APPMSG_STICKER_TYPE, FILE_TYPE):
                     continue
                 for connection in connections:
@@ -382,6 +399,8 @@ class Reader:
                     if row:
                         text = nt._decode_content(row[0])
                         message['fullText'] = nt._strip_group_speaker(text, set(self.names) | {message['senderUsername']}) if '@chatroom' in talker else text
+                        if message.get('localType') == PAT_TYPE:
+                            message['pat'] = parse_pat(message['fullText'], message.get('senderUsername', ''), self.own_wxid)
                         file_info=parse_file_message(message.get('localType'),message['fullText'])
                         if file_info:
                             message.update({'fileKind':'appmsg-6','fileName':file_info['name'],'fileSize':file_info['size'],'fileMd5':file_info['md5']})
@@ -585,10 +604,34 @@ class Reader:
             seen.add(identity);result.append(item)
         return result[:20]
 
+    def open_sticker_pack_database(self, database):
+        expected = self.account.resolve() / 'db_storage' / 'emoticon' / 'emoticon.db'
+        if database != expected or not self.sticker_account_active():
+            raise PermissionError('Sticker pack account changed')
+        key, salt = nt.derive_database_key(str(database), '', '', self.passphrase)
+        connection = nt.require_sqlcipher().connect(database.as_uri() + '?mode=ro', uri=True)
+        try:
+            connection.execute(f'PRAGMA key = "x\'{key}{salt}\'";')
+            connection.execute('PRAGMA query_only=ON')
+            return connection
+        except Exception:
+            connection.close()
+            raise
+
+    def sticker_pack_chat_allowed(self, key):
+        if not self.sticker_account_active() or not self.sticker_collection.allowed(key):
+            return False
+        settings = read_json(self.root/'config/wechatagent.json').get('wechat', {}).get('stickers', {})
+        return settings.get('chats', {}).get(key, settings.get('enabled', True)) is True
+
     def label_cache_enabled(self):
         return read_json(self.root/'config/wechatagent.json').get('wechat',{}).get('stickers',{}).get('labelCache',True) is True
 
     def sticker_source(self,image_id,key):
+        prepared=getattr(self,'pack_send_resources',None)
+        if prepared:
+            resource=prepared.resource(image_id,key)
+            if resource:return resource['sourceMd5']
         prepared=getattr(self,'meme_send_resources',None)
         if prepared:
             resource=prepared.resource(image_id,key)
@@ -625,6 +668,10 @@ class Reader:
         return {'saved':len(updates)}
 
     def resolve_sticker(self, image_id, key):
+        prepared=getattr(self,'pack_send_resources',None)
+        if prepared:
+            resource=prepared.resource(image_id,key)
+            if resource:return resource
         prepared=getattr(self,'meme_send_resources',None)
         if prepared:
             resource=prepared.resource(image_id,key)
@@ -754,8 +801,7 @@ class Reader:
             print('Sticker pool full; DS selection pending, current pool retained.',flush=True)
 
     def poll(self):
-        since = self.started_at
-        # Migrate only already observed sticker descriptors; do not replay old messages.
+        # Restore already observed sticker descriptors; message recovery runs after a subscriber connects.
         for image_id,descriptor in list(self.image_index.items()):
             if descriptor.get('localType')==47:
                 try:self.sticker_collection.remember(image_id,descriptor,'wechat:'+('group:' if '@chatroom' in descriptor['talker'] else 'private:')+self.conversation_id(descriptor['talker']))
@@ -763,15 +809,30 @@ class Reader:
         while not self.stop.is_set():
             try:
                 self.refresh_names(max_age=30)
-                newest = since
+                with self.lock:
+                    connected = bool(self.clients)
+                if not connected:
+                    self.last_poll = time.time()
+                    self.stop.wait(1)
+                    continue
+                project = read_json(self.root/'config/wechatagent.json')
+                scan_errors=[]
                 for talker in self.selected_talkers():
-                    # No historical replay on startup; retain a small overlap.
-                    messages = self.messages(talker, limit=0, from_time=max(self.started_at, since - 3))
-                    for message in reversed(messages):
-                        newest = max(newest, message.get('createTime', 0))
-                        payload = self.make_payload(talker, message)
-                        if not payload or payload['rawid'] in self.seen:
-                            continue
+                    scanned_at = time.time()
+                    try:
+                        payloads, cursor = self.message_sync.scan(talker, scanned_at, project)
+                    except Exception as error:
+                        scan_errors.append(type(error).__name__)
+                        print('Reader conversation scan deferred: '+type(error).__name__, flush=True)
+                        continue
+                    committed = []
+                    for payload in payloads:
+                        if payload.get('historyContext'):
+                            if payload['type'] in (3,47):
+                                payload['content'] = '[历史表情包，未重新解析图片]' if payload['type']==47 else '[历史图片，未重新解析图片]'
+                            payload['type'] = 1
+                            payload.pop('image',None)
+                            payload.pop('file',None)
                         if payload['type'] == FILE_TYPE:
                             reference = self.files.remember(payload, 'wechat:' + ('group:' if '@chatroom' in talker else 'private:') + self.conversation_id(talker))
                             if not reference:
@@ -782,29 +843,32 @@ class Reader:
                             if not image_id:
                                 continue
                             payload['image'] = {'id': image_id}
-                        self.seen[payload['rawid']] = True
-                        while len(self.seen) > 5000:
-                            self.seen.popitem(last=False)
                         with self.lock:
-                            for client in list(self.clients):
-                                try:
-                                    client.put_nowait(payload)
-                                except queue.Full:
-                                    self.clients.discard(client)
+                            if not self.clients or any(client.full() for client in self.clients):
+                                break
+                            self.push_backlog[payload['rawid']] = payload
+                            while len(self.push_backlog)>500:
+                                self.push_backlog.popitem(last=False)
+                            for client in self.clients:
+                                client.put_nowait(payload)
+                        committed.append(payload)
                         self.pushed += 1
                         print('Reader incoming ' + ('sticker' if payload['type'] == 47 else 'image' if payload['type'] == 3 else 'pat' if payload['type'] == PAT_TYPE else 'text') + '; OneBot conversation=' + self.conversation_id(talker), flush=True)
-                since = newest
+                    if len(committed)==len(payloads):
+                        self.message_sync.commit(talker,committed,cursor,scanned_at)
+                    else:
+                        self.message_sync.commit(talker,committed,self.message_sync.cursors.get(talker),scanned_at)
                 self.pump_sticker_collection()
                 self.pump_sticker_pool_review()
                 self.last_poll = time.time()
-                self.last_error = ''
+                self.last_error = ','.join(sorted(set(scan_errors)))
             except Exception as error:
                 self.last_error = type(error).__name__
                 print('Reader polling failed: ' + self.last_error, flush=True)
             self.stop.wait(1)
 
     def replay_image(self, image_id):
-        # Explicit authenticated retry only; startup never replays history.
+        # Explicit authenticated retry of one attachment; automatic history context does not resolve old images.
         descriptor = self.image_index.get(image_id)
         self.resolve_image(image_id)  # Account, whitelist and file validation.
         messages = self.messages(descriptor['talker'], limit=0, from_time=descriptor['createTime'])
@@ -893,6 +957,9 @@ def serve(reader, port, token):
                 self.respond({'success': False, 'error': 'Unauthorized'}, 401)
                 return
             try:
+                if url.path == STICKER_PACK_ROUTE or url.path.startswith(STICKER_PACK_ROUTE + '/'):
+                    self.respond(sticker_pack_response(reader.installed_sticker_packs, url.path, query))
+                    return
                 limit = min(500, max(1, int(query.get('limit', ['100'])[0])))
                 if url.path == '/api/v1/push/messages':
                     self.send_response(200)
@@ -903,6 +970,8 @@ def serve(reader, port, token):
                     self.end_headers()
                     client = queue.Queue(maxsize=500)
                     with reader.lock:
+                        for payload in reader.push_backlog.values():
+                            client.put_nowait(payload)
                         reader.clients.add(client)
                     try:
                         while not reader.stop.is_set():
@@ -934,6 +1003,8 @@ def serve(reader, port, token):
                         'lastError': reader.last_error, 'subscribers': len(reader.clients), 'pushed': reader.pushed,
                         'ownWxid': reader.own_wxid, 'accountDirectory': reader.account.name,
                         'imagesRegistered': len(reader.image_index), 'lastImageError': reader.image_error,
+                        'messageSync': 'per-chat-unread-recovery-v1', 'historyLookbackSeconds': 86400,
+                        'syncConversations': len(reader.message_sync.cursors),
                         'groupIdentity': 'account-chatroom-v1', 'lastGroupMetadataError': getattr(reader, 'group_metadata_error', '')})
                 elif re.fullmatch(r'/api/v1/files/[a-f0-9]{64}', url.path):
                     self.respond(reader.files.resolve(url.path.rsplit('/', 1)[1], query.get('conversationKey', [''])[0], query.get('senderWxid', [''])[0]))
@@ -943,6 +1014,10 @@ def serve(reader, port, token):
                     self.respond(reader.sticker_pool_review_packet(url.path.rsplit('/',1)[1]))
                 elif url.path == '/api/v1/stickers/pool-status':
                     self.respond(reader.sticker_collection.status())
+                elif url.path == '/api/v1/stickers/local-library':
+                    self.respond(reader.local_sticker_library.manager.listing())
+                elif url.path == '/api/v1/stickers/local-library/image':
+                    self.respond(reader.local_sticker_library.manager.image(query.get('id',[''])[0],query.get('scope',[''])[0],query.get('animated',[''])[0]=='1'))
                 elif url.path == '/api/v1/stickers/manage':
                     self.respond(StickerManager(reader.sticker_collection).listing())
                 elif url.path == '/api/v1/stickers/manage/image':
@@ -953,6 +1028,8 @@ def serve(reader, port, token):
                     self.respond(reader.resolve_sticker(url.path.rsplit('/',1)[1],query.get('conversationKey',[''])[0]))
                 else:
                     self.respond({'success': False, 'error': 'Not found'}, 404)
+            except StickerPackError as error:
+                self.respond({'success': False, 'error': error.code}, error.status)
             except ManagerError as error:
                 self.respond({'error':error.code},error.status)
             except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
@@ -968,17 +1045,29 @@ def serve(reader, port, token):
             if not token or not hmac.compare_digest(supplied, token):
                 self.respond({'success': False, 'error': 'Unauthorized'}, 401)
                 return
-            if self.path.startswith('/api/v1/stickers/manage/'):
+            if self.path == STICKER_PACK_ROUTE + '/prepare':
+                try:
+                    size = int(self.headers.get('Content-Length', '0'))
+                    if not 0 < size <= 2048: raise ValueError()
+                    body = json.loads(self.rfile.read(size))
+                    if not isinstance(body, dict) or set(body) != {'conversationKey', 'id'}: raise ValueError()
+                    self.respond(reader.installed_sticker_packs.prepare(body['conversationKey'], body['id']))
+                except StickerPackError as error: self.respond({'error': error.code}, error.status)
+                except (ValueError, TypeError): self.respond({'error': 'STICKER_PACK_INVALID_REQUEST'}, 400)
+                except Exception: self.respond({'error': 'STICKER_PACK_PREPARE_FAILED'}, 503)
+                return
+            if self.path.startswith(('/api/v1/stickers/manage/','/api/v1/stickers/local-library/')):
                 try:
                     limit=11300000 if self.path.endswith('/import') else 8192
                     size=int(self.headers.get('Content-Length','0'))
                     if not 0<size<=limit:
                         self.close_connection=True;raise ManagerError('STICKER_MANAGER_TOO_LARGE',413)
                     self.connection.settimeout(15)
-                    body=json.loads(self.rfile.read(size));manager=StickerManager(reader.sticker_collection)
-                    if self.path=='/api/v1/stickers/manage/import':result=manager.import_image(body)
-                    elif self.path=='/api/v1/stickers/manage/edit':result=manager.change(body)
-                    elif self.path=='/api/v1/stickers/manage/delete':result=manager.change(body,remove=True)
+                    body=json.loads(self.rfile.read(size));local=self.path.startswith('/api/v1/stickers/local-library/');manager=reader.local_sticker_library.manager if local else StickerManager(reader.sticker_collection)
+                    manage_path=self.path.replace('/api/v1/stickers/local-library/','/api/v1/stickers/manage/',1)
+                    if manage_path=='/api/v1/stickers/manage/import':result=manager.import_image(body)
+                    elif manage_path=='/api/v1/stickers/manage/edit':result=manager.change(body)
+                    elif manage_path=='/api/v1/stickers/manage/delete':result=manager.change(body,remove=True)
                     else:raise ManagerError('STICKER_MANAGER_NOT_FOUND',404)
                     self.respond(result)
                 except ManagerError as error:self.respond({'error':error.code},error.status)

@@ -34,5 +34,7 @@ export function normalizeOneBotEvent(platform, adapter, event) {
     ...(platform==='wechat' && event.wechatagent?.interaction==='pat'?{interaction:'pat'}:{}),
     ...(platform==='wechat' && normalizeForwardedRecord(event.wechatagent?.forwardedRecord)?{forwardedRecord:normalizeForwardedRecord(event.wechatagent.forwardedRecord)}:{}),
     ...(quoteReply?{quoteReply}:{}),
+    ...(platform==='wechat'&&event.wechatagent?.historyContext===true?{context_only:true}:{}),
+    ...(platform==='wechat'&&event.wechatagent?.recoveredUnread===true?{recovered_unread:true}:{}),
   };
 }

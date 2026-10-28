@@ -65,7 +65,7 @@ async function bootstrapDeployment(resourcesPath, dataHome, progress = () => {},
       if (previous.sha256 === installedHash) fs.copyFileSync(previousBuild,path.join(nativeDir,'build.previous.json'));
     }
   }
-  for (const file of ['version.dll', 'build.json']) {
+  for (const file of ['version.dll', 'build.json',...(fs.existsSync(path.join(resourcesPath,'vendor/hook/WeChatVoice.dll'))?['WeChatVoice.dll']:[])]) {
     const source = path.join(resourcesPath, 'vendor', 'hook', file), target = path.join(nativeDir, file);
     const bytes = fs.readFileSync(source);
     if (!fs.existsSync(target) || crypto.createHash('sha256').update(fs.readFileSync(target)).digest('hex') !== crypto.createHash('sha256').update(bytes).digest('hex')) fs.writeFileSync(target,bytes);

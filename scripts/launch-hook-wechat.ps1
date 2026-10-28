@@ -1,4 +1,4 @@
-param([switch]$PrepareOnly,[switch]$UpdateHook)
+﻿param([switch]$PrepareOnly,[switch]$UpdateHook)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 & node (Join-Path $PSScriptRoot 'project-config.mjs')
@@ -37,6 +37,11 @@ if ((Test-Path -LiteralPath $destination) -and (Get-FileHash -LiteralPath $desti
 }
 try {
     & (Join-Path $PSScriptRoot 'pin-hook-client.ps1') -Unlock
+    if ($build.voiceSha256) {
+        $voiceDll=Join-Path $native 'WeChatVoice.dll'
+        if ((Get-FileHash -LiteralPath $voiceDll -Algorithm SHA256).Hash.ToLowerInvariant() -ne $build.voiceSha256) { throw 'Voice Hook hash mismatch.' }
+        Copy-Item -LiteralPath $voiceDll -Destination (Join-Path $directory 'WeChatVoice.dll') -Force
+    }
     Copy-Item -LiteralPath $dll -Destination $destination -Force
     Copy-Item -LiteralPath (Join-Path $root 'state\hook\native-token.txt') -Destination (Join-Path $directory 'wechatagent-hook.token') -Force
 } finally { & (Join-Path $PSScriptRoot 'pin-hook-client.ps1') }

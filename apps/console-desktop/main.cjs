@@ -65,7 +65,7 @@ else {
     if(storageFailure)throw storageFailure;
     let loadingWindow;
     if (installedDistribution) {
-      loadingWindow = new BrowserWindow({ width:480, height:280, resizable:false, title:'WeChatAgent', icon:path.join(__dirname,'icon.png'), backgroundColor:'#f3f5f4', webPreferences:{preload:path.join(__dirname,'loading-preload.cjs'),contextIsolation:true,sandbox:true,nodeIntegration:false} });
+      loadingWindow = new BrowserWindow({ width:480, height:280, resizable:false, title:'WeChatAgent', icon:path.join(__dirname,'icon.png'), backgroundColor:'#ffffff', webPreferences:{preload:path.join(__dirname,'loading-preload.cjs'),contextIsolation:true,sandbox:true,nodeIntegration:false} });
       loadingWindow.setMenu(null);
       await loadingWindow.loadFile(path.join(__dirname,'loading.html'));
       const progress=message=>{if(!loadingWindow.isDestroyed())loadingWindow.webContents.send('deployment:progress',message);};
@@ -112,8 +112,8 @@ else {
     const savedBounds = preferences.bounds;
     const area = savedBounds && Number.isFinite(savedBounds.x) && Number.isFinite(savedBounds.y) ? screen.getDisplayNearestPoint({ x: savedBounds.x, y: savedBounds.y }).workArea : screen.getPrimaryDisplay().workArea;
     window = new BrowserWindow({ ...windowPlacement(savedBounds, area), minWidth: Math.min(900, area.width), minHeight: Math.min(620, area.height), title: 'WeChatAgent', icon: iconPath, show: false,
-      titleBarStyle: 'hidden', titleBarOverlay: { color: theme === 'dark' ? '#222a25' : '#ffffff', symbolColor: theme === 'dark' ? '#e5ebe7' : '#26332e', height: 48 },
-      backgroundColor: theme === 'dark' ? '#181e1b' : '#f3f5f4',
+      titleBarStyle: 'hidden', titleBarOverlay: { color: theme === 'dark' ? '#212121' : '#ffffff', symbolColor: theme === 'dark' ? '#ececec' : '#0d0d0d', height: 48 },
+      backgroundColor: theme === 'dark' ? '#212121' : '#ffffff',
       webPreferences: { preload: path.join(__dirname, 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true, devTools: false, spellcheck: false },
     });
     const trusted = event => event.sender === window.webContents && safeNavigation(event.senderFrame?.url ?? '', origin);
@@ -137,7 +137,7 @@ else {
     ipcMain.handle('desktop:theme', (event, value) => {
       if (!trusted(event) || !['light', 'dark'].includes(value)) return;
       preferences.theme = value; savePreferences();
-      window.setTitleBarOverlay({ color: value === 'dark' ? '#222a25' : '#ffffff', symbolColor: value === 'dark' ? '#e5ebe7' : '#26332e', height: 48 });
+      window.setTitleBarOverlay({ color: value === 'dark' ? '#212121' : '#ffffff', symbolColor: value === 'dark' ? '#ececec' : '#0d0d0d', height: 48 });
     });
     ipcMain.handle('desktop:export-log', async (event, payload) => {
       if (!trusted(event) || typeof payload?.text !== 'string' || payload.text.length > 250000) throw new Error('日志内容无效。');

@@ -1,0 +1,8 @@
+import test from 'node:test';import assert from 'node:assert/strict';
+import {recentImageReferences} from '../components/qq-bridge/src/core/image-reference.js';
+const id='a'.repeat(64),other='b'.repeat(64),base={platform:'wechat',kind:'group',conversation_id:'123',sender_id:'456',timestamp:1000,text:'[图片]',images:[{id}],processed:true};
+const question=(text='分析一下这张图')=>({...base,timestamp:1100,text,images:[]});
+test('an explicit image follow-up reattaches a completed image after offloading',()=>{assert.deepEqual(recentImageReferences([base],[question()]),[{id,referenced:true}]);assert.deepEqual(recentImageReferences([base],[question('下午好')]),[]);});
+test('fresh images take precedence and stickers cannot become an unrelated picture',()=>{assert.deepEqual(recentImageReferences([base],[{...question(),images:[{id:other}]}]),[]);assert.deepEqual(recentImageReferences([{...base,images:[{id,kind:'sticker'}]}],[question()]),[]);});
+test('image references never cross chat, work mode, sender direction or five-minute boundary',()=>{for(const change of [{conversation_id:'789'},{kind:'private'},{platform:'qq'},{work_mode:'assistant'},{outgoing:true},{timestamp:799},{timestamp:1200}])assert.deepEqual(recentImageReferences([{...base,...change}],[question()]),[]);});
+test('singular references choose the newest image and comparisons admit at most two',()=>{const history=[base,{...base,timestamp:1050,images:[{id:other}]}];assert.deepEqual(recentImageReferences(history,[question()]),[{id:other,referenced:true}]);assert.deepEqual(recentImageReferences(history,[question('对比一下这两张图片')]).map(x=>x.id),[other,id]);});

@@ -115,9 +115,10 @@ test('ready Bridge candidates send in one model decision with bounded prompt ove
   assert.equal(buffer.unread(key).length,0);
   assert.equal(requests.length,1,'ready candidates must not require a format-repair or selection turn');
   assert.deepEqual(sent,[id]);assert.deepEqual(texts,[]);
-  assert(requests[0].prompt.includes('无需图库搜索或选图工具'));
+  assert(requests[0].prompt.includes('已有合适候选时可直接用 [STICKER:S编号]'));
+  assert(requests[0].prompt.includes('[文字配图偏好]'));
   assert(requests[0].prompt.includes('<untrusted_chat>'));
-  assert(requests[0].prompt.length<600,'fixed wrapper must stay bounded for a short message and three labelled candidates');
+  assert(requests[0].prompt.length<1200,'wrapper and expression preference must stay bounded for a short message and three labelled candidates');
   assert.deepEqual(requests[0].meta.images,[]);
 });
 

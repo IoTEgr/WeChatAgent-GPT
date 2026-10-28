@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
+import crypto from 'node:crypto';
 import {fork} from 'node:child_process';
 import {pathToFileURL} from 'node:url';
 import {setTimeout as delay} from 'node:timers/promises';
@@ -85,7 +86,9 @@ if(process.argv[2]==='--bridge-entry-fixture'){
     await send('private','hello fixture');
     assert.equal(turns().at(-1).body.conversationKey,'wechat:private:123');
     assert.equal(turns().at(-1).body.replyMaxMessages,0);assert.equal(turns().at(-1).body.fishNotebookRequest,undefined);
+    const freshPersona='Owner updated the persona while this bridge is running';const freshSnapshot=JSON.parse(fs.readFileSync(bridgeConfig,'utf8'));freshSnapshot.role=freshPersona;const snapshotTemp=bridgeConfig+'.new';fs.writeFileSync(snapshotTemp,JSON.stringify(freshSnapshot));fs.renameSync(snapshotTemp,bridgeConfig);
     wechat.replyLayout.maxMessages=1;save();await send('group','助手 hello group');
+    assert.equal(turns().at(-1).body.personaDigest,crypto.createHash('sha256').update(freshPersona).digest('hex'));
     assert.equal(turns().at(-1).body.conversationKey,'wechat:group:456');assert.equal(turns().at(-1).body.replyMaxMessages,1);
     const manifest=JSON.parse(fs.readFileSync(path.join(projectRoot,'optional-extensions/fish-notebook/plugin.json'),'utf8'));
     fs.mkdirSync(path.join(root,'plugins/fish-notebook'),{recursive:true});

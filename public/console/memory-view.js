@@ -1,4 +1,6 @@
+import {createLongMemoryUI} from './long-term-memory.js';
 export function createMemoryUI({api,state,escapeHtml:esc,icon,renderPage,toast,notebookPage=async()=>''}){
+  const longMemory=createLongMemoryUI({api,state,escapeHtml:esc,renderPage,toast});
   let overview,selected='',query='',status='all',source='all',offset=0,section='',sequence=0,rows=[];
   const date=value=>value?new Date(value).toLocaleString('zh-CN',{hour12:false}):'尚无记录';
   const mode=value=>({'assistant':'助手任务','assistant-chat':'助手群聊','social':'聊天模式'})[value]??'聊天模式';
@@ -13,7 +15,8 @@ export function createMemoryUI({api,state,escapeHtml:esc,icon,renderPage,toast,n
   }
   async function page(){
     const request=++sequence,nextSection=state.memorySection??'members';if(section!==nextSection){section=nextSection;offset=0;selected='';}
-    const tabs=`<nav class="workspace-tabs" aria-label="记忆分类"><a href="#memory/members" ${section==='members'?'aria-current="page"':''}>群友记忆</a><a href="#memory/summaries" ${section==='summaries'?'aria-current="page"':''}>压缩记忆</a><a href="#memory/notebook" ${section==='notebook'?'aria-current="page"':''}>鱼的记事本</a></nav>`;
+    const tabs=`<nav class="workspace-tabs" aria-label="记忆分类"><a href="#memory/long-term" ${section==='long-term'?'aria-current="page"':''}>长期记忆</a><a href="#memory/members" ${section==='members'?'aria-current="page"':''}>群友记忆</a><a href="#memory/summaries" ${section==='summaries'?'aria-current="page"':''}>压缩记忆</a><a href="#memory/notebook" ${section==='notebook'?'aria-current="page"':''}>鱼的记事本</a></nav>`;
+    if(section==='long-term')return tabs+await longMemory.page();
     if(section==='notebook')return tabs+await notebookPage();
     overview=await api('/api/memory');
     if(!overview.available)return tabs+`<section class="card"><div class="empty-state"><h2>先连接微信账号</h2><p>${esc(overview.message??'连接后可查看该账号的记忆。')}</p><a class="button" href="#settings/connections">前往连接设置</a></div></section>`;
@@ -32,11 +35,13 @@ export function createMemoryUI({api,state,escapeHtml:esc,icon,renderPage,toast,n
     return tabs+`<div class="section-stack memory-page">${selector}${body}</div>`;
   }
   function mount(){
+    if(section==='long-term'){longMemory.mount();return;}
     const form=document.getElementById('memory-filter-form');if(!form)return;
     const update=()=>{selected=document.getElementById('memory-chat').value;query=document.getElementById('memory-query')?.value??query;status=document.getElementById('memory-status')?.value??status;source=document.getElementById('memory-source')?.value??source;offset=0;void renderPage();};
     form.onsubmit=event=>{event.preventDefault();update();};for(const id of ['memory-chat','memory-status','memory-source'])document.getElementById(id)?.addEventListener('change',update);
   }
   function click(button){
+    if(longMemory.click(button))return true;
     if(button.dataset.memoryOpen){selected=button.dataset.memoryOpen;section=button.dataset.memorySection==='members'?'members':'summaries';state.memorySection=section;offset=0;const hash='#memory/'+section;if(location.hash===hash)void renderPage();else location.hash=hash;return true;}
     if(button.hasAttribute('data-memory-refresh')){void renderPage();return true;}
     if(button.dataset.memoryPage){offset=Math.max(0,offset+Number(button.dataset.memoryPage)*24);void renderPage();return true;}

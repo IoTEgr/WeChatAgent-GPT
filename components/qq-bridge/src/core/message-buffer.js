@@ -6,6 +6,8 @@ import { normalizeForwardedRecord, normalizeQuoteReply } from './wechat-events.j
 import {STICKER_CANDIDATE_MAX} from './sticker-policy.js';
 import {validReplyMessageLimit} from '../../../../packages/dsh-social-bridge-plugin/reply-layout-policy.mjs';
 import {verifiedAssistantSender} from '../../../../packages/dsh-social-bridge-plugin/assistant-policy.mjs';
+import {interactionDisplay} from './interaction-protocol.js';
+import {validVoiceObservations} from './voice-images.js';
 
 export function replyDeliveryParts(result,deliveryId) {
   const parts=result.decision==='RESPOND'?(result.textParts??[result.text]).map(text=>({text})):[];
@@ -13,6 +15,8 @@ export function replyDeliveryParts(result,deliveryId) {
   return parts.map((part,index)=>({...part,deliveryId:index===0?deliveryId:crypto.createHash('sha256').update(deliveryId+(part.stickerId?'\0sticker':'\0text-'+(index+1))).digest('hex'),state:'queued'}));
 }
 function validReplyParts(item){
+  if(item.voiceAnchor!==undefined&&!/^[a-f0-9]{64}$/.test(item.voiceAnchor))return false;
+  if(item.typingStartedAt!==undefined&&(!Number.isSafeInteger(item.typingStartedAt)||item.typingStartedAt<0))return false;
   if(item.parts===undefined)return true;
   const expected=replyDeliveryParts(item.result,item.deliveryId);
   return Array.isArray(item.parts)&&item.parts.length===expected.length&&item.parts.length<=(item.result.text?.length??0)+1&&item.parts.every((part,index)=>{
@@ -20,7 +24,7 @@ function validReplyParts(item){
     return part&&part.text===target.text&&part.stickerId===target.stickerId&&part.deliveryId===target.deliveryId&&
       ['queued','sending','submitted','confirmed','unconfirmed','failed','cancelled','expired'].includes(part.state)&&
       ['busyAttempts','receiptChecks'].every(name=>part[name]===undefined||Number.isSafeInteger(part[name])&&part[name]>=0&&part[name]<=10)&&
-      ['retryAt','busyDeadline'].every(name=>part[name]===undefined||Number.isSafeInteger(part[name])&&part[name]>=0);
+      ['retryAt','busyDeadline','typingReadyAt'].every(name=>part[name]===undefined||Number.isSafeInteger(part[name])&&part[name]>=0);
   })&&(item.deliveryNotice===undefined||typeof item.deliveryNotice==='string'&&item.deliveryNotice.length<=1000);
 }
 function validPendingRequest(item){
@@ -59,15 +63,15 @@ export class MessageBuffer {
       for(const [key,item] of Object.entries(saved.pendingReplies??{})){
         if(!item||!/^[a-f0-9]{64}$/.test(item.deliveryId??'')||typeof item.throughId!=='string'||
           !['RESPOND','STICKER'].includes(item.result?.decision)||
-          item.result.decision==='RESPOND'&&(typeof item.result.text!=='string'||!item.result.text.trim()||item.result.text.length>(item.message?.work_mode==='assistant'?12000:1200))||
-          item.result.textParts!==undefined&&(!Array.isArray(item.result.textParts)||item.result.textParts.length<2||item.result.textParts.length>item.result.text.length||item.result.textParts.some(part=>typeof part!=='string'||!part.trim())||item.result.textParts.join('\n\n')!==item.result.text)||
+          item.result.decision==='RESPOND'&&(typeof item.result.text!=='string'||!item.result.text.trim()||item.result.text.length>(item.message?.work_mode==='assistant'?12000:1200)+256)||
+          item.result.textParts!==undefined&&(!Array.isArray(item.result.textParts)||item.result.textParts.length<1||item.result.textParts.length>item.result.text.length||item.result.textParts.some(part=>typeof part!=='string'||!part.trim())||item.result.textParts.join('\n\n')!==item.result.text)||
           item.result.decision==='STICKER'&&!/^[a-f0-9]{64}$/.test(item.result.stickerId??'')||!item.message||
-          item.result.stickerId!==undefined&&!/^[a-f0-9]{64}$/.test(item.result.stickerId)||!validReplyParts(item)||
+          item.result.stickerId!==undefined&&!/^[a-f0-9]{64}$/.test(item.result.stickerId)||item.result.voiceObservations!==undefined&&!validVoiceObservations(item.result.voiceObservations)||!validReplyParts(item)||
           buildConversationKey(item.message.platform,item.message.kind,item.message.conversation_id)!==key)throw Error('invalid reply outbox');
         this.pendingReplies.set(key,item);
       }
       for(const [key,item] of Object.entries(saved.contextNotices??{})){
-        if(!item||typeof item.id!=='string'||typeof item.text!=='string'||item.text.length>1000)throw Error('invalid context notice');
+        if(!item||typeof item.id!=='string'||typeof item.text!=='string'||item.text.length>1000||item.voiceUnavailable!==undefined&&typeof item.voiceUnavailable!=='boolean')throw Error('invalid context notice');
         this.contextNotices.set(key,item);
       }
       for(const [key,item]of Object.entries(saved.pendingRequests??{})){
@@ -100,7 +104,9 @@ export class MessageBuffer {
       text: String(message.text ?? '').slice(0, 4000), timestamp: Number(message.timestamp) || Date.now() / 1000,
       images: outgoing ? [] : (message.images ?? []).filter(image => /^[a-f0-9]{64}$/.test(image?.id ?? '')).slice(0,4),
       files:outgoing?[]:(message.files??[]).filter(file=>/^[a-f0-9]{64}$/.test(file?.id??'')&&typeof file.name==='string'&&file.name.length<=180&&Number.isSafeInteger(file.size)&&file.size>=0&&file.size<=50*1024*1024).slice(0,3),
-      direct_mention: Boolean(message.direct_mention), outgoing, processed: outgoing };
+      direct_mention: Boolean(message.direct_mention), outgoing, processed: outgoing || message.context_only===true,
+      ...(message.context_only===true?{context_only:true}:{}),
+      ...(message.recovered_unread===true?{recovered_unread:true}:{}) };
     if(!outgoing && message.interaction==='pat')row.interaction='pat';
     const record=!outgoing && normalizeForwardedRecord(message.forwardedRecord);
     if(record)row.forwardedRecord=record;
@@ -114,6 +120,7 @@ export class MessageBuffer {
     const rows = this.chats.get(key) ?? [];
     this.archive?.append(key,row,{fullText:message.text});
     rows.push(row);
+    if(message.context_only||message.recovered_unread)rows.sort((a,b)=>a.timestamp-b.timestamp);
     if (rows.length > this.maxPerChat) rows.splice(0, rows.length - this.maxPerChat);
     this.chats.set(key, rows);
     this.#save();
@@ -136,12 +143,21 @@ export class MessageBuffer {
   forgetReply(key){this.pendingReplies.delete(key);this.#save();}
   rememberRequest(key,item){if(!validPendingRequest(item))throw Error('invalid pending model request');this.pendingRequests.set(key,structuredClone(item));this.#save();}
   forgetRequest(key){this.pendingRequests.delete(key);this.#save();}
+  replanReply(key,notice){
+    const reply=this.pendingReplies.get(key),request=this.pendingRequests.get(key),previous=this.contextNotices.get(key);
+    this.pendingReplies.delete(key);this.pendingRequests.delete(key);this.contextNotices.set(key,notice);
+    try{this.#save();}catch(error){
+      if(reply)this.pendingReplies.set(key,reply);if(request)this.pendingRequests.set(key,request);
+      if(previous)this.contextNotices.set(key,previous);else this.contextNotices.delete(key);
+      throw error;
+    }
+  }
   saveMedia(){this.#save();}
   skipOfflineInputs({before=Infinity,reason='dsh_offline'}={}){
     let skipped=0;
     for(const [key,rows]of this.chats){
       let changed=false;
-      for(const row of rows)if(!row.outgoing&&!row.processed&&(before===Infinity||Number(row.timestamp)*1000<before)){
+      for(const row of rows)if(!row.outgoing&&!row.processed&&!(row.recovered_unread&&row.work_mode!=='assistant')&&(before===Infinity||Number(row.timestamp)*1000<before)){
         row.processed=true;row.reply_skip_reason=reason;row.reply_skipped_at=Date.now();
         if(row.work_mode==='assistant')row.reply_review_required=true;
         skipped++;changed=true;
@@ -160,6 +176,7 @@ export class MessageBuffer {
   }
   setContextNotice(key,item){this.contextNotices.set(key,item);this.#save();}
   recordReplyPart(key,item,outgoing){
+    if(outgoing)outgoing={...outgoing,text:interactionDisplay(outgoing.text)};
     if(outgoing)this.archive?.append(key,{...outgoing,outgoing:true,sender_name:'AI',delivery_id:item.deliveryId,message_id:'out-'+item.deliveryId});
     const rows=this.chats.get(key)??[];
     const existing=rows.find(row=>row.outgoing&&row.delivery_id===item.deliveryId);
@@ -171,6 +188,7 @@ export class MessageBuffer {
         conversation_name:String(outgoing.conversation_name??''),sender_id:String(outgoing.sender_id??''),sender_name:'AI',
         message_id:'out-'+item.deliveryId,text:String(outgoing.text).slice(0,4000),timestamp:outgoing.timestamp,
         images:[],direct_mention:false,outgoing:true,processed:true,delivery_id:item.deliveryId,delivery_status:outgoing.delivery_status,proactive:outgoing.proactive===true,...(outgoing.work_mode?{work_mode:outgoing.work_mode}:{}),
+        ...(['voice','sticker','text'].includes(outgoing.reply_kind)?{reply_kind:outgoing.reply_kind}:{}),
         ...(/^[a-f0-9]{64}$/.test(outgoing.sticker_id??'')?{sticker_id:outgoing.sticker_id}:{})});
     }
     if(rows.length>this.maxPerChat)rows.splice(0,rows.length-this.maxPerChat);

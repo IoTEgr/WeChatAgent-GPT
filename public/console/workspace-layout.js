@@ -1,6 +1,6 @@
 import {SETTINGS_SECTIONS,STICKER_SECTIONS,CAPABILITY_SECTIONS,chatRows,filterChats,effectiveChatFeature} from './layout-model.mjs';
 
-export function createWorkspaceLayout({api,state,escapeHtml:esc,icon,header,field,toggle,empty,sessionGroupUI,sessionUsage,getCards,contextSettingsCard,feedbackCard,connectionsPage,logsPage,toolsPage,dshPage,stickerPage}){
+export function createWorkspaceLayout({api,state,escapeHtml:esc,icon,header,field,toggle,empty,sessionGroupUI,sessionUsage,getCards,contextSettingsCard,feedbackCard,connectionsPage,logsPage,toolsPage,dshPage,stickerPage,localStickerPage,voiceCard=()=>''}){
  const tabs=(base,sections,active)=>`<nav class="workspace-tabs" aria-label="${base==='settings'?'应用设置':base==='stickers'?'表情包分类':'能力分类'}">${Object.entries(sections).map(([id,name])=>`<a href="#${base}/${id}" ${id===active?'aria-current="page"':''}>${esc(name)}</a>`).join('')}</nav>`;
  const scope=message=>`<p class="scope-note">${icon('info')}${esc(message)}</p>`;
  const recovery=()=>`<section class="card">${header('端口与进程排查','连接失败或端口占用时，先查看实际进程。','','tool')}<p class="card-description">检查不会停止程序；停止选中的进程仍需再次确认。</p><button class="button" data-process-recovery>检查端口与进程</button></section>`;
@@ -54,13 +54,15 @@ export function createWorkspaceLayout({api,state,escapeHtml:esc,icon,header,fiel
   else if(section==='logs')body=await logsPage();
   else if(section==='advanced')body=`<details class="card technical-details"><summary>开发者工具</summary><p class="subtle">供已有源码与构建环境的维护者使用；安装版日常使用无需执行。</p>${toolsPage()}</details>`;
   else body=`<section class="card">${header('外观','使用当前应用的主题与背景设置。')}<div class="button-row"><button class="button" data-layout-control="theme-button">切换浅色 / 深色主题</button>${window.desktop?.chooseBackground?'<button class="button" data-layout-control="appearance-button">背景图片与外观</button>':''}</div></section><section class="card">${header('当前数据位置','账号配置、缓存和会话管理数据位于当前工作区。')}<p class="mono data-location">${esc(state.root)}</p><p class="subtle">本页仅展示位置，不会移动或清理数据。当前版本：${esc(state.deployment?.version??'开发版')}</p><a class="text-link" href="https://github.com/sourcepro5/WeChatAgent" target="_blank" rel="noopener noreferrer">GitHub 项目 ${icon('arrow')}</a></section>`;
+  if(section==='chat')body+=voiceCard();
   return tabs('settings',SETTINGS_SECTIONS,section)+`<div class="section-stack">${scope(section==='assistant'?'管理员名单属于当前微信账号；群友可以聊天，只有管理员可以执行任务；能力授权在对应聊天中设置。':section==='chat'||section==='context'?'当前账号的默认设置；单个聊天的覆盖值在聊天详情中设置。':'连接和维护设置用于当前安装实例。')}${body}</div>`;
  }
  function networkPage(){const cards=getCards();return tabs('extensions',CAPABILITY_SECTIONS,'network')+`<div class="section-stack">${scope('搜索与网页阅读分别控制。联网搜索支持单聊覆盖；网页阅读当前对允许的聊天全局生效。')}${cards.search}${cards.reader}<a class="button" href="#chats">为单个聊天设置能力</a></div>`;}
  async function capabilityPage(){const section=state.capabilitySection??'catalog';if(section==='network')return networkPage();return tabs('extensions',CAPABILITY_SECTIONS,section)+(section==='dsh'?await dshPage():'');}
  async function stickersPage(){
   const section=state.stickerSection??'library',cards=getCards();let body;
-  if(section==='library')body=await stickerPage();
+  if(section==='local')body=await localStickerPage();
+  else if(section==='library')body=await stickerPage();
   else if(section==='collection')body=`<section class="card">${header('自动收集与共享','设置当前账号的共享表情池。')}${toggle('收集已允许聊天的表情','wechat.stickers.collectEnabled','只收集允许范围内的聊天；最多 50 张，满池后由 DS 选择保留。')}${toggle('好友与群聊共享同一表情池','wechat.stickers.shareEnabled','关闭后聊天收集的表情仅用于其来源聊天；手动添加继续对已允许聊天共享。')}${toggle('学习并复用表情标签','wechat.stickers.labelCache','正常看图时顺便学习，不额外调用模型。')}<p id="sticker-pool-status" class="card-description" role="status">正在读取表情池状态…</p><p class="subtle">满池筛选可能调用模型；失败时保留现有表情。</p></section>`;
   else if(section==='sources')body=`<section class="card">${header('dsh-meme 图库与联网补图','保持原插件，通过现有接口选图，发送由微信组件完成。')}<div class="button-row"><button class="button" data-extension-details="dsh-meme">配置图库接入与聊天范围</button><button class="button" data-meme-guide>安装与使用教程</button></div><p class="subtle space-top">联网补图还需对应聊天开启联网搜索与表情发送；长期收藏仍使用本账号表情池。</p><a class="text-link" href="#extensions/network">联网搜索默认设置</a></section><details class="card technical-details"><summary>缺失资源下载与旧版兼容</summary>${cards.media}</details>`;
   else body=`<section class="card">${header('表情发送','候选数量对当前账号生效；发送开关支持单个聊天覆盖。')}${toggle('允许发送原生表情包','wechat.stickers.enabled','保存后生效。关闭保留已下载表情和图库内容。')}<div class="form-grid">${field('每轮候选数量','wechat.stickers.candidateLimit',{type:'number',min:1,max:20,step:1,required:true,help:'1–20，默认 8。每轮提供给模型挑选的数量上限，一轮仍选一张发送。数量越多，输入 token 开销可能越大；实际数量受素材、标签和消息长度影响。保存后用于新轮次，无需重启。'})}</div><a class="text-link" href="#chats">查看单个聊天的发送设置</a></section>`;

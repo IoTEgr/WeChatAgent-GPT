@@ -1,0 +1,8 @@
+{
+  "sha256": "a54fbb2608d8e46ae74d1d6a7e2e8d0f9c3186ca8fe427b0f1976ccab9145e05",
+  "version": 1,
+  "targetVersion": "4.1.10.27",
+  "weixinSha256": "f487e4f56930456a25fb0d7b058c77e2dcd364e268d49bdfff4dc0e3be26ba36",
+  "sourceSha256": "2489a0217ed8589a569199d024e1b880c8b13fab62f0b21063afffedf280c200",
+  "backend": "native-interaction-service-v1"
+}

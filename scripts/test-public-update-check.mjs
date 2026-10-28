@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import {createUpdateChecker,compareVersions} from './update-check.mjs';
-const prefix='https://github.com/sourcepro5/WeChatAgent/releases/download/';
+const prefix='https://github.com/IoTEgr/WeChatAgent-GPT/releases/download/';
 const release=(version,extra=[])=>({tag_name:'v'+version,assets:[{name:'WeChatAgent-Setup-'+version+'-x64.exe',state:'uploaded',browser_download_url:prefix+'v'+version+'/WeChatAgent-Setup-'+version+'-x64.exe'},...extra]});
 function fixture(t,local={version:'0.3.2'},responses=[]){const root=fs.mkdtempSync(path.join(os.tmpdir(),'wechat-update-'));fs.writeFileSync(path.join(root,'deployment.json'),JSON.stringify(local));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));let calls=0,clock=1000000;const checker=createUpdateChecker({root,now:()=>clock,fetchImpl:async()=>{calls++;const next=responses.shift();if(next instanceof Error)throw next;return new Response(JSON.stringify(next??release('0.3.2')),{status:200});}});return {checker,get calls(){return calls;},advance:ms=>{clock+=ms;}};}
 test('startup update metadata detects a newer version with only official download links and caches checks',async t=>{

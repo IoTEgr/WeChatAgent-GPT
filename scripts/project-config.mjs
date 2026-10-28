@@ -1,3 +1,5 @@
+import {validateTypingSettings} from '../components/qq-bridge/src/core/typing-delay.js';
+import {validateVoiceSettings} from '../components/qq-bridge/src/core/voice-protocol.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -29,6 +31,12 @@ const write = (file, value) => {
 export function validateConfig(config) {
   validateFishNotebook(config.wechat?.fishNotebook);
   validateHistorySettings(config.wechat?.history);
+  validateTypingSettings(config.social?.typing);
+  validateVoiceSettings(config.wechat?.voice);
+  if(config.wechat?.interactions!==undefined){
+    const value=config.wechat.interactions;
+    if(!value||typeof value!=='object'||Array.isArray(value)||['enabled','quote','pat'].some(key=>value[key]!==undefined&&typeof value[key]!=='boolean'))throw new Error('Invalid WeChat interaction settings');
+  }
   validateMemberMemory(config.wechat?.memberMemory);
   validateMemeLibrarySettings(config.wechat?.memeLibrary);
   validateConversationSettings(config.wechat);
@@ -132,7 +140,7 @@ export function prepare(root = projectRoot) {
     const existingPatch=fs.readFileSync(patchFile,'utf8');
     const before=upsertAssistantPresetPatch(upsertToolCatalogPatch(existingPatch,root),root);
     let after = before.replace(/^(        provider:).*/m, `$1 ${JSON.stringify(config.dsh.provider)}`).replace(/^(        model:).*/m, `$1 ${JSON.stringify(config.dsh.model)}`);
-    const moduleDir=path.dirname(patchFile),sources=['fish-notebook.mjs','fish-notebook-policy.mjs','fish-notebook-store.mjs','memory-summary.mjs','reply-layout-policy.mjs','assistant-notifications.mjs','assistant-feedback.mjs','assistant-tasks.mjs','file-tools.mjs','file-transfers.mjs','assistant-policy.mjs','plugin-catalog.mjs','work-modes.mjs','assistant-preset.mjs','local-policy.mjs','image-input.mjs','deadline.mjs','prompt-context.mjs','member-memory.mjs','member-memory-policy.mjs','meme-library.mjs','meme-library-policy.mjs','native-context.mjs','session-groups.mjs','conversation-policy.mjs','dsh-access.mjs','dsh-bundled.mjs','sticker-pool-review.mjs','dsh-migration.mjs','web-reader.mjs','web-reader-policy.mjs','web-reader-content.mjs','web-reader-fetch.mjs','web-reader-zxsj.mjs','skills/web-reader/skill.json','skills/web-reader/SKILL.md','skills/web-reader/references/quotes.md','skills/web-reader/references/video.md','model-search.mjs','dsh-search.mjs','search-provider.mjs','skills/search/skill.json','skills/search/SKILL.md','search-budget.mjs','search-policy.mjs','weather-query.mjs','weather-source.mjs','social-tool-policy.mjs','social-tool-restrict.mjs','context-policy.mjs','history-policy.mjs','history-store.mjs','history-runtime.mjs','usage-summary.mjs','request-window.mjs'].map(name=>path.join(moduleDir,name));
+    const moduleDir=path.dirname(patchFile),sources=['fish-notebook.mjs','fish-notebook-policy.mjs','fish-notebook-store.mjs','memory-summary.mjs','reply-layout-policy.mjs','assistant-notifications.mjs','assistant-feedback.mjs','assistant-tasks.mjs','file-tools.mjs','file-transfers.mjs','assistant-policy.mjs','plugin-catalog.mjs','work-modes.mjs','assistant-preset.mjs','local-policy.mjs','image-input.mjs','image-diagnostics.mjs','deadline.mjs','prompt-context.mjs','member-memory.mjs','member-memory-policy.mjs','meme-library.mjs','meme-library-policy.mjs','sticker-packs.mjs','native-context.mjs','session-groups.mjs','conversation-policy.mjs','dsh-access.mjs','dsh-bundled.mjs','sticker-pool-review.mjs','dsh-migration.mjs','web-reader.mjs','web-reader-policy.mjs','web-reader-content.mjs','web-reader-fetch.mjs','web-reader-zxsj.mjs','skills/web-reader/skill.json','skills/web-reader/SKILL.md','skills/web-reader/references/quotes.md','skills/web-reader/references/video.md','model-search.mjs','dsh-search.mjs','search-provider.mjs','skills/search/skill.json','skills/search/SKILL.md','search-budget.mjs','search-policy.mjs','weather-query.mjs','weather-source.mjs','social-tool-policy.mjs','social-tool-restrict.mjs','context-policy.mjs','history-policy.mjs','history-store.mjs','history-runtime.mjs','long-term-memory.mjs','long-term-memory-tools.mjs','usage-summary.mjs','request-window.mjs'].map(name=>path.join(moduleDir,name));
     for(const name of ['index.mjs','catalog.mjs','snapshots.mjs']){const file=path.join(root,'packages/extension-runtime',name);if(fs.existsSync(file))sources.push(file);}
     if(sources.every(file=>fs.existsSync(file))){
       const revision=crypto.createHash('sha256').update(Buffer.concat(sources.map(file=>fs.readFileSync(file)))).digest('hex').slice(0,16);

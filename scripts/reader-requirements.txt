@@ -4,3 +4,4 @@ zstandard==0.25.0
 pycryptodome==3.23.0
 Pillow==12.3.0
 imageio-ffmpeg==0.6.0
+aiortc==1.15.0

@@ -9,19 +9,24 @@ export async function imageBlocks(ctx,root,conversationKey,images,provider,model
   if (images.some(image=>!/^[a-f0-9]{64}$/.test(image?.id ?? ''))) throw new Error('INVALID_IMAGE_REFERENCE');
   const llm=ctx.get('llm'), attachments=ctx.get('attachments');
   if (!llm || !attachments) throw new Error('NATIVE_IMAGE_SERVICES_UNAVAILABLE');
+  let info;const failures=[];
+  const finish=blocks=>{
+    try{const file=path.join(root,'state/image-input-health.json'),temp=file+'.'+crypto.randomUUID()+'.tmp';fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(temp,JSON.stringify({at:Date.now(),provider,model,inputModalities:info?.inputModalities??[],requested:images.length,ready:blocks.filter(block=>block.type==='image').length,failures}));fs.renameSync(temp,file);}catch{}
+    return blocks;
+  };
   const signal=AbortSignal.any([AbortSignal.timeout(timeoutMs),...(parentSignal?[parentSignal]:[])]);
   const unavailableBlock=(image,index,error)=>{
     if(!onUnavailable)throw error;
     // Reject the image itself on binding/integrity/format failures too. Never
     // admit its bytes, and never leave that bad input at the head of the chat.
     const safeCode=/^(?:IMAGE_[A-Z_]+|INVALID_IMAGE_DATA|MODEL_IMAGE_INPUT_UNSUPPORTED)$/.test(error.message)?error.message:'IMAGE_READER_NOT_READY';
-    onUnavailable({id:image.id,index,code:error.imageError??(error.name==='TimeoutError'||error.name==='AbortError'?'IMAGE_PROCESS_TIMEOUT':safeCode)});
+    const code=error.imageError??(error.name==='TimeoutError'||error.name==='AbortError'?'IMAGE_PROCESS_TIMEOUT':safeCode);
+    failures.push({index,code});onUnavailable({id:image.id,index,code});
     return {type:'text',text:`[本轮附图 I${index+1} 读取失败，未提供画面；不要猜测内容。其余成功附图仍可使用。]`};
   };
-  let info;
   try{info=await boundedTask(s=>llm.resolveModelInfo(provider,model,s),{timeoutMs,signal});}
-  catch(error){return images.map((image,index)=>unavailableBlock(image,index,error));}
-  if (!info.inputModalities?.includes('image')) return images.map((image,index)=>unavailableBlock(image,index,new Error('MODEL_IMAGE_INPUT_UNSUPPORTED')));
+  catch(error){return finish(images.map((image,index)=>unavailableBlock(image,index,error)));}
+  if (!info.inputModalities?.includes('image')) return finish(images.map((image,index)=>unavailableBlock(image,index,new Error('MODEL_IMAGE_INPUT_UNSUPPORTED'))));
   const io=JSON.parse(fs.readFileSync(path.join(root,'state/wechat-io-config.json'),'utf8').replace(/^\uFEFF/,''));
   const base=new URL(io.reader_base_url);
   if (base.protocol!=='http:' || base.hostname!=='127.0.0.1' || base.username || base.password || base.pathname!=='/' || base.search || base.hash) throw new Error('IMAGE_READER_LOOPBACK_REQUIRED');
@@ -54,7 +59,7 @@ export async function imageBlocks(ctx,root,conversationKey,images,provider,model
   await Promise.all(Array.from({length:Math.min(2,images.length)},async()=>{
     while(next<images.length){const index=next++;blocks[index]=await prepare(images[index],index);}
   }));
-  return blocks.flat();
+  return finish(blocks.flat());
 }
 
 export function offloadCompletedImages(session,sourceSeqs) {

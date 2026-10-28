@@ -253,9 +253,10 @@ async function fixture(t) {
   fs.mkdirSync(path.join(dir,'scripts'),{recursive:true});
   fs.copyFileSync('scripts/reader-account-state.mjs',path.join(dir,'scripts/reader-account-state.mjs'));
   fs.copyFileSync('packages/dsh-social-bridge-plugin/image-input.mjs',path.join(pluginDir,'image-input.mjs'));
+  fs.copyFileSync('packages/dsh-social-bridge-plugin/image-diagnostics.mjs',path.join(pluginDir,'image-diagnostics.mjs'));
   fs.copyFileSync('packages/dsh-social-bridge-plugin/deadline.mjs',path.join(pluginDir,'deadline.mjs'));
   fs.copyFileSync('packages/dsh-social-bridge-plugin/local-policy.mjs',path.join(pluginDir,'local-policy.mjs'));
-  for(const name of ['fish-notebook.mjs','fish-notebook-policy.mjs','fish-notebook-store.mjs','memory-summary.mjs','reply-layout-policy.mjs','assistant-feedback.mjs','assistant-notifications.mjs','social-tool-restrict.mjs','assistant-tasks.mjs','assistant-control.mjs','plugin-catalog.mjs','work-modes.mjs','session-groups.mjs','prompt-context.mjs','member-memory.mjs','member-memory-policy.mjs','meme-library.mjs','meme-library-policy.mjs','model-search.mjs','dsh-access.mjs','file-tools.mjs','file-transfers.mjs','assistant-policy.mjs','conversation-policy.mjs','dsh-bundled.mjs','sticker-pool-review.mjs','dsh-migration.mjs','dsh-search.mjs','search-provider.mjs','search-budget.mjs','search-policy.mjs','weather-query.mjs','weather-source.mjs','social-tool-policy.mjs','context-policy.mjs','history-policy.mjs','history-store.mjs','history-runtime.mjs','usage-summary.mjs','request-window.mjs'])fs.copyFileSync('packages/dsh-social-bridge-plugin/'+name,path.join(pluginDir,name));
+  for(const name of ['fish-notebook.mjs','fish-notebook-policy.mjs','fish-notebook-store.mjs','memory-summary.mjs','reply-layout-policy.mjs','assistant-feedback.mjs','assistant-notifications.mjs','social-tool-restrict.mjs','assistant-tasks.mjs','assistant-control.mjs','plugin-catalog.mjs','work-modes.mjs','session-groups.mjs','prompt-context.mjs','member-memory.mjs','member-memory-policy.mjs','meme-library.mjs','meme-library-policy.mjs','sticker-packs.mjs','model-search.mjs','dsh-access.mjs','file-tools.mjs','file-transfers.mjs','assistant-policy.mjs','conversation-policy.mjs','dsh-bundled.mjs','sticker-pool-review.mjs','dsh-migration.mjs','dsh-search.mjs','search-provider.mjs','search-budget.mjs','search-policy.mjs','weather-query.mjs','weather-source.mjs','social-tool-policy.mjs','context-policy.mjs','history-policy.mjs','history-store.mjs','history-runtime.mjs','long-term-memory.mjs','long-term-memory-tools.mjs','usage-summary.mjs','request-window.mjs'])fs.copyFileSync('packages/dsh-social-bridge-plugin/'+name,path.join(pluginDir,name));
   for(const name of ['web-reader.mjs','web-reader-policy.mjs','web-reader-fetch.mjs','web-reader-content.mjs','web-reader-zxsj.mjs'])fs.copyFileSync('packages/dsh-social-bridge-plugin/'+name,path.join(pluginDir,name));
   fs.cpSync('packages/dsh-social-bridge-plugin/skills',path.join(pluginDir,'skills'),{recursive:true});
   for(const name of ['plugin-api','extension-runtime'])fs.cpSync('packages/'+name,path.join(dir,'packages',name),{recursive:true});
@@ -348,6 +349,7 @@ async function fixture(t) {
       agents:{get:sid=>agents.get(sid),create:async options=>{calls.create.push(options);if(calls.failCreate)throw new Error('fixture creation failed');const handle=register(options.sessionId,options);await options.setup(agents.get(options.sessionId).ctx);return handle;},resume:async options=>{calls.resume.push(options);if(calls.resumeError)throw calls.resumeError;const handle=register(options.resumeSessionId);await options.setup(agents.get(options.resumeSessionId).ctx);return handle;}}};
     ctx.tokenMeter = { measure: sess => ({ totalTokens: sess.snapshotEvents().some(e => e.type === 'compaction/end' && !e.data?.error) ? options.afterContextTokens ?? 1000 : options.contextTokens ?? 0, baseline: { kind: 'usage' } }) };
     ctx.workspaceRegistry=options.workspaceRegistry??{get archivedSessionIds(){return [...archived];}};
+    ctx.testStream=options=>waterfall('llm/stream',options,()=>options);
     ctx.get=name=>ctx[name];ctx.llm={resolveModelInfo:async(provider,model)=>{assert.equal(provider,'fixture-provider');assert.equal(model,'fixture-model');return {inputModalities:['text','image'],reasoning:options.reasoningInfo??{efforts:[{id:'off'},{id:'high'}]}};}};
     ctx.attachments={saveImage:async image=>({attachmentId:'sha256:'+crypto.createHash('sha256').update(image.data).digest('hex'),mediaType:image.mediaType,width:1,height:1,bytes:image.data.length})};
     apply(ctx,{port,statePath,tokenFile,cwd:dir,provider:'fixture-provider',model:'fixture-model',...options});
@@ -362,6 +364,17 @@ async function fixture(t) {
   return {start,store,statePath,dir,archived,setPersona};
 }
 const key='wechat:private:123', persona='固定测试人格：简短自然。', info={conversationKey:key,persona,personaName:'测试人格',conversationName:'测试好友'};
+
+test('long memory tools persist across native plugin restart and inject only the outgoing model request',async t=>{
+ const f=await fixture(t),account='a'.repeat(64);fs.mkdirSync(path.join(f.dir,'state/weflow'),{recursive:true});fs.mkdirSync(path.join(f.dir,'config'),{recursive:true});fs.writeFileSync(path.join(f.dir,'state/weflow/active-account.json'),JSON.stringify({id:account}));fs.writeFileSync(path.join(f.dir,'config/wechatagent.json'),JSON.stringify({wechat:{whitelist:{private:['123'],groups:[]}}}));
+ let r,write=true,projections=0;const options={beforeAssistant:async agent=>{
+  const tool=agent.registeredTools.get('wechat_memory');assert(tool,'scoped memory tool registered');
+  if(write){const result=await tool.execute({op:'remember',items:[{kind:'fact',subject:'测试好友 · 123',topic:'饮料偏好',text:'喜欢无糖可乐',evidence:'我喜欢无糖可乐'}]});assert.equal(result.isError,false);write=false;}
+  else{const result=await tool.execute({op:'recall',query:'无糖可乐'});assert(result.content.includes('喜欢无糖可乐'));assert.equal(result.isError,false);}
+  const outgoing={sessionId:String(agent.session.id),messages:r.calls.inputs.at(-1),tools:[]};await r.ctx.testStream(outgoing);assert(outgoing.messages.some(m=>m.source?.socialLongMemory&&m.content[0].text.includes('喜欢无糖可乐')));assert(!JSON.stringify(agent.session.snapshotEvents()).includes('socialLongMemory'));projections++;
+ }};
+ r=await f.start(options);await r.request('/followup',{...info,message:'我喜欢无糖可乐，记住了。'});await r.stop();r=await f.start(options);await r.request('/followup',{...info,message:'我喜欢喝什么？'});assert.equal(projections,2);assert.equal((await r.request('/health')).longTermMemory,'scoped-plain-json-v1');
+});
 
 test('WeChat window personas live in isolated native system prefixes across turns, owner changes and restart',async t=>{
  const f=await fixture(t);allowGroupFixture(f);

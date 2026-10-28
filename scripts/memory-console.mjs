@@ -3,6 +3,7 @@ import path from 'node:path';
 import {Worker} from 'node:worker_threads';
 import {activeReaderAccount} from './reader-account-state.mjs';
 import {MEMBER_TAGS,memberMemoryEnabled} from '../packages/dsh-social-bridge-plugin/member-memory-policy.mjs';
+import {LongTermMemory} from '../packages/dsh-social-bridge-plugin/long-term-memory.mjs';
 
 const HEX=/^[a-f0-9]{64}$/,KEY=/^wechat:(private|group):[1-9]\d{0,15}$/,AGE=90*86400000;
 const fault=(message,status=400)=>Object.assign(Error(message),{status});
@@ -56,5 +57,14 @@ export function createMemoryConsole({root,configFor,plugin,now=Date.now}){
     const rows=[...history,...native].sort((a,b)=>b.at-a.at||b.id.localeCompare(a.id));
     scope(id);return {accountScope:id,conversationKey:key,offset,limit:24,total:rows.length,historyTotal,historyLimited:historyTotal>200,historyError,nativeAvailable,nativeStatus,summaries:rows.slice(offset,offset+24)};
   }
-  return {overview,members,summaries};
+  function longTerm(params){
+    const id=scope(params.get('scope')),key=params.get('conversationKey'),config=chat(key),mode=params.get('mode')??config.wechat.workModes?.[key]??'social';
+    const result=new LongTermMemory(root,id).read(key,mode);scope(id);return result;
+  }
+  function updateLongTerm(body){
+    if(!body.scope||typeof body.revision!=='string')throw fault('请刷新长期记忆页面后重试。',409);
+    const id=scope(body.scope),config=chat(body.conversationKey),mode=body.mode??config.wechat.workModes?.[body.conversationKey]??'social';scope(id);
+    return new LongTermMemory(root,id).mutate(body.conversationKey,mode,body.operation,{revision:body.revision});
+  }
+  return {overview,members,summaries,longTerm,updateLongTerm};
 }

@@ -1,5 +1,8 @@
 import {pluginEnabled} from '../../../packages/plugin-api/catalog.mjs';
 import {replyMessageLimit} from '../../../packages/dsh-social-bridge-plugin/reply-layout-policy.mjs';
+import {createTechNewsResearch} from './core/tech-news.js';
+import {proactivePolicy} from './core/proactive-policy.js';
+import {typingDelayMs} from './core/typing-delay.js';
 import {AssistantFeedback} from '../../../packages/dsh-social-bridge-plugin/assistant-feedback.mjs';
 import {createAssistantNoticeDelivery} from './core/assistant-notice-delivery.js';
 import fs from 'node:fs';
@@ -56,7 +59,8 @@ const searchStateFor=async message=>{
 };
 const adapter = new WechatOneBotAdapter({ server: { host: '127.0.0.1', ...(wechat.onebot?.server ?? {}),
   token: process.env.SOCIAL_ONEBOT_TOKEN ?? '' } }, log);
-const personaFor = (key) => socialPersona(config, key, (roleName) => {
+// Match the owner snapshot read by DSH, including after a live persona update.
+const personaFor = (key) => socialPersona(JSON.parse(fs.readFileSync(configPath,'utf8').replace(/^\uFEFF/,'')), key, (roleName) => {
   if (!/^[^\\/\0.][^\\/\0]{0,60}$/.test(roleName) || roleName.includes('..')) throw new Error('invalid role name');
   return selectRoleText(fs.readFileSync(path.join(root, 'roles', `${roleName}.md`), 'utf8'), 'v2');
 });
@@ -65,12 +69,15 @@ const engine = new SocialEngine({ buffer,connection, roleFor: key => personaFor(
   personaNameFor: key => personaFor(key).personaName,workModeFor,assistantControl:(key,action,message,command)=>plugin.assistantTask(key,action,{...command,senderWxid:verifiedAssistantSender(message)}),assistantAccess:(key,message)=>assistantSenderAllowed((config.search_policy_file?JSON.parse(fs.readFileSync(config.search_policy_file,'utf8').replace(/^\uFEFF/,'' )).wechat:wechat),key,verifiedAssistantSender(message)),
   wakeWords: wechat.wake_words ?? [],
   mode: wechat.wake_mode ?? 'hybrid',modeFor, batchMs: config.social?.batch_ms ?? 3000,
+  typingDelayFor:(part,target)=>workModeFor(buildConversationKey(target.platform,target.kind,target.conversation_id))==='social'?typingDelayMs(part.text,config.social?.typing):0,
   minIntervalMs: config.social?.min_interval_ms ?? 15000,
   privateMinIntervalMs: config.social?.private_min_interval_ms ?? 1000,
   maxPerMinute: config.social?.max_per_minute ?? 3,
   maxPerTenMinutes: config.social?.max_per_ten_minutes ?? 10,
   decide: (key, prompt, metadata) => plugin.followup(key, prompt, metadata),
   modelSearchReady:()=>plugin.modelSearchReady(),
+  interactionCapabilitiesFor:message=>adapter.interactionCapabilities({kind:message.kind,target:message.conversation_id}),
+  contextVoiceFor:()=>{const settings=JSON.parse(fs.readFileSync(path.join(historyRoot,'config/wechatagent.json'),'utf8').replace(/^\uFEFF/,'' )).wechat?.voice;return settings?.enabled===true&&settings.replyMode==='conversation';},
   searchFor:searchStateFor,
   searchPolicyFor:message=>searchPolicyFor(buildConversationKey(message.platform,message.kind,message.conversation_id)),
   stickerChoicesFor: message=>adapter.stickerChoices({kind:message.kind,target:message.conversation_id,query:message.text}),
@@ -80,7 +87,7 @@ const engine = new SocialEngine({ buffer,connection, roleFor: key => personaFor(
   stickerLabelsFor: (message,ids)=>adapter.stickerLabels({kind:message.kind,target:message.conversation_id,ids}),
   saveStickerLabels: (message,labels)=>adapter.saveStickerLabels({kind:message.kind,target:message.conversation_id,labels}),
   sendSticker: (message,id,options)=>adapter.sendSticker({kind:message.kind,target:message.conversation_id,id,...options}),
-  send: (message, text, options) => adapter.sendText({ kind: message.kind, target: message.conversation_id, text,deliveryId:options?.deliveryId }), log });
+  send: (message, text, options) => adapter.sendText({ kind: message.kind, target: message.conversation_id, text,deliveryId:options?.deliveryId,voiceAnchor:options?.voiceAnchor,voiceObservations:options?.voiceObservations }), log });
 const memberSettings=()=>config.search_policy_file?JSON.parse(fs.readFileSync(config.search_policy_file,'utf8').replace(/^\uFEFF/,'' )).wechat:wechat;
 const memberHistory=scopeHistory(baseHistoryStore,()=> 'assistant-chat',{fixedMode:'assistant-chat'});
 const memberArchive={backfill:(...args)=>memberHistory.backfill(...args),append:(...args)=>{
@@ -90,10 +97,12 @@ const memberArchive={backfill:(...args)=>memberHistory.backfill(...args),append:
 const memberBuffer=new MessageBuffer(path.join(historyRoot,'state/accounts',historyAccount.id||historyAccount.legacyId||'legacy','assistant-group-chat.json'),{maxPerChat:buffer.maxPerChat,archive:memberArchive});
 const memberConnection=new DshConnectionGuard({buffer:memberBuffer,probe:()=>plugin.connectionHealth({projectRoot:historyRoot,accountScope:historyAccount.id}),log});
 const memberEngine=engine.createGroupChat({buffer:memberBuffer,connection:memberConnection,assistantAccess:(key,message)=>conversationWorkMode(memberSettings(),key)==='assistant'&&assistantGroupChatAllowed(memberSettings(),key,verifiedAssistantSender(message))});
+const researchTechNews=createTechNewsResearch();
 const proactive=new ProactiveEngine({stateFile:path.resolve(config.proactive_state_file??path.join(root,'state/proactive/state.json')),
   buffer,social:engine,settingsFor:()=>config.proactive_policy_file?JSON.parse(fs.readFileSync(config.proactive_policy_file,'utf8').replace(/^\uFEFF/,'')):{wechat},
   personaFor,decide:(key,prompt,metadata)=>plugin.followup(key,prompt,metadata),
   searchFor:searchStateFor,
+  techNewsFor:(message,options)=>{const key=buildConversationKey(message.platform,message.kind,message.conversation_id);return researchTechNews({...options,isAllowed:()=>{const settings=config.proactive_policy_file?JSON.parse(fs.readFileSync(config.proactive_policy_file,'utf8').replace(/^\uFEFF/,'')):{wechat};const policy=proactivePolicy(settings.wechat,key);return searchPolicyFor(key).enabled&&policy.enabled&&policy.useSearch&&policy.mode==='tech';}});},
   send:(message,text,options)=>adapter.sendText({kind:message.kind,target:message.conversation_id,text,...options}),
   isReady:()=>connection.ready&&adapter.stats.connected&&!!adapter.selfId,selfIdFor:()=>adapter.selfId,log});
 const contextMaintenance = new ContextMaintenance({ buffer, social: engine,

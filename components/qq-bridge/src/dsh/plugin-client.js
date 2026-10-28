@@ -33,7 +33,7 @@ export class DshPluginClient {
 
   async modelSearchReady(){await this.searchReady();return this.modelSearchSupported===true;}
 
-  async followup(conversationKey, message, metadata = {}, {busyRetries=0}={}) {
+  async followup(conversationKey, message, metadata = {}, {busyRetries=0,visionRecoveries=1}={}) {
     // The server reads the owner's persona locally. Send only its digest to
     // detect stale settings without duplicating up to 60 KB in every RPC.
     const {persona,...requestMetadata}=metadata;
@@ -52,19 +52,34 @@ export class DshPluginClient {
     });
     const body = await response.json();
     if(!response.ok&&body.error==='agent_unavailable'&&body.detail==='session_busy'&&busyRetries>0){
-      await new Promise(resolve=>setTimeout(resolve,100));return this.followup(conversationKey,message,metadata,{busyRetries:busyRetries-1});
+      await new Promise(resolve=>setTimeout(resolve,100));return this.followup(conversationKey,message,metadata,{busyRetries:busyRetries-1,visionRecoveries});
     }
-    const rejectedVision=!response.ok&&metadata.images?.length&&(body.error==='turn_failed'&&body.code==='INVALID_REQUEST'||body.error==='agent_unavailable'&&body.detail==='agent_timeout');
-    if ((!response.ok && body.error === 'agent_unavailable' && body.detail === 'IMAGE_READER_NOT_READY'||rejectedVision) && metadata.images?.length) {
+    const visionTimeout=!response.ok&&metadata.images?.length&&body.error==='agent_unavailable'&&body.detail==='agent_timeout';
+    if(visionTimeout&&visionRecoveries>0&&metadata.workMode!=='assistant'){
+      // Generation timeout does not invalidate successfully decoded images.
+      // Keep every bound attachment on one fresh native turn; never tell the
+      // model that the reader failed or silently replace the input with text.
+      this.log(`[Social] ${conversationKey} image_model_timeout count=${metadata.images.length}; retrying with images`);
+      const retryMetadata={...metadata,...(metadata.batchId?{batchId:crypto.createHash('sha256').update(metadata.batchId+'\0vision-timeout-retry-v1').digest('hex')}:{})};
+      delete retryMetadata.searchTicket;delete retryMetadata.searchContext;retryMetadata.searchOptOut=true;retryMetadata.memeLibraryDisabled=true;
+      const output=await this.followup(conversationKey,message,retryMetadata,{busyRetries:10,visionRecoveries:visionRecoveries-1});
+      if(retryMetadata.memeChoices)metadata.memeChoices=retryMetadata.memeChoices;
+      return output;
+    }
+    const rejectedVision=!response.ok&&metadata.images?.length&&body.error==='turn_failed'&&body.code==='INVALID_REQUEST';
+    if (visionRecoveries>0&&(!response.ok && body.error === 'agent_unavailable' && body.detail === 'IMAGE_READER_NOT_READY'||rejectedVision) && metadata.images?.length) {
       // Before-admission read failures and explicitly failed/cancelled vision
       // turns can degrade once. A busy cancellation gets a bounded grace period.
       const reason = rejectedVision?'IMAGE_MODEL_REQUEST_FAILED':typeof body.imageError === 'string' && /^IMAGE_[A-Z_]{3,80}$/.test(body.imageError) ? body.imageError : 'IMAGE_READER_NOT_READY';
       this.log(`[Social] ${conversationKey} attachment_unavailable count=${metadata.images.length} reason=${reason}; continuing with text`);
-      const notice = '\n附件状态：本批图片附件读取失败，本轮没有提供图片。不得猜测或声称看到图片内容；可回应其他文字，图片问题请明确说明未能读取。';
+      const notice = rejectedVision
+        ? '\n附件状态：图片已读取，但本次模型请求未能处理图片；重试本轮未附带画面。这不是文件读取失败，不能说图片损坏或归咎于对方的图片；可回应其他文字，不能猜测图中内容。'
+        : '\n附件状态：本批图片附件读取失败，本轮没有提供图片。不得猜测或声称看到图片内容；可回应其他文字，图片问题请明确说明未能读取。';
       if (message.length + notice.length > 18000) throw new Error('IMAGE_FALLBACK_MESSAGE_TOO_LARGE');
       const fallbackMetadata={...metadata,images:[],...(metadata.batchId?{batchId:crypto.createHash('sha256').update(metadata.batchId+'\0without-images-v1').digest('hex')}:{})};
       if(rejectedVision){delete fallbackMetadata.searchTicket;delete fallbackMetadata.searchContext;fallbackMetadata.searchOptOut=true;fallbackMetadata.memeLibraryDisabled=true;}
-      const output=await this.followup(conversationKey,message.replace(/\n<sticker_label_request>[\s\S]*?<\/sticker_label_request>/g,'')+notice,fallbackMetadata,{busyRetries:rejectedVision?10:0});
+      const output=await this.followup(conversationKey,message.replace(/\n<sticker_label_request>[\s\S]*?<\/sticker_label_request>/g,'')+notice,fallbackMetadata,{busyRetries:rejectedVision?10:0,visionRecoveries:visionRecoveries-1});
+      if(fallbackMetadata.memeChoices)metadata.memeChoices=fallbackMetadata.memeChoices;
       return output.split(/STICKER_LABELS:/)[0].trim();
     }
     if (!response.ok || body.error) {
@@ -72,7 +87,7 @@ export class DshPluginClient {
       const detail = budgetCode?` (${budgetCode})`:typeof body.detail === 'string' && /^[a-zA-Z_]{3,100}$/.test(body.detail) ? ` (${body.detail})` : '';
       throw Object.assign(new Error(`DSH plugin: ${body.error ?? response.status}${detail}`),{admitted:body.admitted===true});
     }
-    if(Array.isArray(body.memeChoices))metadata.memeChoices=body.memeChoices.filter(item=>item?.source==='dsh-meme'&&/^[a-f0-9]{64}$/.test(item.id??'')&&typeof item.description==='string'&&item.description.length<=120&&Array.isArray(item.tags)&&item.tags.length<=6&&item.tags.every(tag=>typeof tag==='string'&&tag.length<=16)).slice(0,1);
+    if(Array.isArray(body.memeChoices))metadata.memeChoices=body.memeChoices.filter(item=>['dsh-meme','wechat-installed-packs'].includes(item?.source)&&/^[a-f0-9]{64}$/.test(item.id??'')&&typeof item.description==='string'&&item.description.length<=120&&Array.isArray(item.tags)&&item.tags.length<=6&&item.tags.every(tag=>typeof tag==='string'&&tag.length<=16)).slice(0,1);
     return String(body.text ?? '');
   }
 

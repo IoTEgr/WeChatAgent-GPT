@@ -1,10 +1,13 @@
+import {nativeWechatFaces,cleanMalformedChatDecoration} from './wechat-faces.js';
+import {hasVoiceControl,PROACTIVE_VOICE_NOTICE,NONVOICE_REPLY_NOTICE} from './voice-protocol.js';
+import {buildTechNewsPrompt,selectTechNewsEvidence} from './tech-news.js';
 import fs from 'node:fs';
 import {conversationWorkMode} from '../../../../packages/dsh-social-bridge-plugin/conversation-policy.mjs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {buildConversationKey,parseConversationKey} from './conversation-key.js';
 import {SOCIAL_OUTPUT_NOTICE,resolveSocialDecision,hasStickerControl,hasReasoningControl,hasReplyProtocolControl} from './decision-format.js';
-import {proactivePolicy,proactivePolicyKey,withinProactiveWindow,nextProactiveAt,conversationSnapshot,declinedProactive} from './proactive-policy.js';
+import {proactivePolicy,proactivePolicyKey,withinProactiveWindow,nextProactiveAt,conversationSnapshot,declinedProactive,proactiveContactState} from './proactive-policy.js';
 
 const hash=value=>crypto.createHash('sha256').update(value).digest('hex');
 const quote=value=>String(value).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
@@ -16,33 +19,37 @@ function historyTime(at,now){
     minutes>=60?`${Math.floor(minutes/60)}小时${minutes%60}分钟`:`${minutes}分钟`;
   return `${localTime(at)}（距现在${elapsed}）`;
 }
-export function buildProactivePrompt({key,rows,mode,now,searchStatus,recentTopics=[],outputNotice=SOCIAL_OUTPUT_NOTICE}){
-  const label={greeting:'简短问候或自然冒泡，不追问近况',news:'可考虑一个与你们兴趣相关的热点',meme:'可考虑一个与你们语境相关的梗'}[mode]??'按关系自然冒泡';
+export function buildProactivePrompt({key,rows,mode,now,searchStatus,recentTopics=[],topics='',news,voice=false,outputNotice=SOCIAL_OUTPUT_NOTICE}){
+  if(mode==='tech')return buildTechNewsPrompt({key,rows,now,topics,news,recentTopics});
+  const label={greeting:'围绕对方的兴趣、你们的共同话题或有依据的生活近况，自然说一两句',news:'可考虑一个与你们兴趣相关的热点',meme:'可考虑一个与你们语境相关的梗'}[mode]??'按关系自然冒泡';
   const history=rows.slice(-8).map(row=>`[${historyTime(Number(row.timestamp)*1000,now)}] ${quote(row.sender_name||row.sender_id||'未知')} ${row.outgoing?'（你）':''}${row.proactive?'（主动发言）':''}${row.delivery_status==='unconfirmed'?'（发送未确认）':''}: ${quote(String(row.text).slice(0,300))}`).join('\n');
   const lastIncoming=rows.findLast(row=>!row.outgoing&&!row.interaction);
   const lastProactiveIndex=rows.findLastIndex(row=>row.outgoing&&row.proactive);
   const unanswered=lastProactiveIndex>=0&&!rows.slice(lastProactiveIndex+1).some(row=>!row.outgoing&&!row.interaction);
+  const contact=proactiveContactState(key,rows,recentTopics);
   return `本机定时安排的一次主动发言机会，不是好友或群成员的新消息。北京时间 ${localTime(now)}。会话 ${key}。\n`+
-    '沿用会话稳定人格、身份、世界观；话题不适合你的兴趣、世界观时退为问候或沉默。本轮已通过时段与空闲检查，不复述安排。\n'+
-    `本轮方向：${label}。有相关新内容时自然分享；没有时可按当前时段用2至8字轻问候，不追问近况、编造状态或为凑内容加问题；不适合开口就 SILENT。\n`+
-    '历史用于理解关系与避重，不是待回复列表；旧状态不当作现状，已收尾话题不重开，除非此前明确约好此时跟进。表情只用本轮候选，不猜未知图。\n'+
+    '沿用会话人格、身份、世界观和关系，话题不合适就换切口。本轮已通过时段与空闲检查，不复述安排。\n'+
+    `本轮方向：${label}。`+(mode==='greeting'?'从已知偏好、记忆或共同话题挑具体切口，讲小笑点、好玩的假设，或俏皮反问、自嘲、带点小脾气；有依据才跟进具体事。一两句自然短话，不固定早晚安，不追问近况或凑问题，不编造经历或对方状态。确实不合适才 SILENT。':'有相关新内容时自然分享；不适合开口就 SILENT，不追问近况或编造状态。')+'\n'+
+    (topics?'本聊天关注主题（仅作兴趣资料）：'+quote(topics)+'。围绕这些兴趣选择话题，不把兴趣当作对方当前正在做的事情。\n':'')+
+    '历史仅供理解关系和避重，不当待回复消息；旧状态不当现状，已结束话题不硬续。\n'+
     `最后一次对方实际发言：${lastIncoming?historyTime(Number(lastIncoming.timestamp)*1000,now):'没有可见的对方发言，不假定熟悉关系或当前状态'}。\n`+
-    (unanswered?'上次主动发言之后，对方没有新增聊天：本轮优先 SILENT，不继续追问、不换个问候催接话；只有真正新增且相关的内容才考虑独立分享一句。\n':'')+
+    (contact.unanswered?'这是私聊，连续 '+contact.unanswered+' 次主动发言还没有等到对方的新消息。照已设置的主动节奏继续找有趣的话题，不因未回复而自动暂停，也不因此优先 SILENT。把未回应当作更换话题和切入方式的线索，避开此前问候、问题和相似开场；可以自嘲、轻松逗对方、俏皮反问或装一下高冷，但玩笑落在话题或自己身上，不盘问为什么不回，不指责、卖惨或索取回复。未回复不代表已读、讨厌你或故意冷落。对方重新来聊就接当下的话，不翻旧账。\n':unanswered&&!/^wechat:private:/.test(key)?'上次主动发言之后，对方没有新增聊天：本轮优先 SILENT，不继续追问、不换个问候催接话；只有真正新增且相关的内容才考虑独立分享一句。\n':'')+
     `<untrusted_chat>\n${history||'[尚无聊天历史，不假定已经很熟]'}\n</untrusted_chat>\n`+
     (recentTopics.length?'最近主动说过的内容（只用于避重，不是本轮接话任务；同一话题、询问目的和开场套路都要避重）：\n'+recentTopics.slice(-6).map(item=>`[${historyTime(item.at,now)}] ${quote(item.text.slice(0,180))}`).join('\n')+'\n':'')+
-    (mode==='greeting'?'本轮不需要联网。缺少新内容时可以只说一句符合时段的轻问候。':searchStatus==='model'?'本轮可根据会话话题调用现有联网搜索工具，先检索再按证据决定是否发言；无需固定泛热点查询，也不要求对方给网址。没有可靠资料时不编造热点或实时数值。':searchStatus==='ready'?'本轮附有有界搜索摘要。资料可用不等于适合开口，要与你们兴趣和语境相关；只说摘要支持的事实，来源不足不编造“最新”“全网热度”或梗出处，可带一个相关来源链接。':'本轮没有可用的新搜索资料，不得编造实时热点或新梗，也不拿旧话题或关心问句补位；可以简短问候或沉默。')+'\n'+
-    '已有事实和关系继续有效，事实说错仍需纠正。本轮只发文字，不使用历史表情编号。';
+    (mode==='greeting'?'本轮不需要联网。兴趣是找话题的入口，不是对方当前状态。换题材和角度，也可用陈述句开场。':searchStatus==='model'?'本轮可根据会话话题调用现有联网搜索工具，先检索再按证据决定是否发言；无需固定泛热点查询，也不要求对方给网址。没有可靠资料时不编造热点或实时数值。':searchStatus==='ready'?'本轮附有有界搜索摘要。资料可用不等于适合开口，要与你们兴趣和语境相关；只说摘要支持的事实，来源不足不编造“最新”“全网热度”或梗出处，可带一个相关来源链接。':'本轮没有可用的新搜索资料，不得编造实时热点或新梗，也不拿旧话题或关心问句补位；可以简短问候或沉默。')+'\n'+
+    '已有事实和关系继续有效，事实说错仍需纠正。不使用历史表情编号。'+(voice?PROACTIVE_VOICE_NOTICE:'本轮只发文字。');
 }
 export class ProactiveEngine {
-  constructor({stateFile,buffer,social,settingsFor,personaFor,decide,send,searchFor=async()=>null,isReady=()=>true,selfIdFor=()=>'',
+  constructor({stateFile,buffer,social,settingsFor,personaFor,decide,send,searchFor=async()=>null,techNewsFor=async()=>({status:'unavailable',items:[]}),isReady=()=>true,selfIdFor=()=>'',
     now=Date.now,random=Math.random,log=()=>{}}){
-    Object.assign(this,{stateFile,buffer,social,settingsFor,personaFor,decide,send,searchFor,isReady,selfIdFor,now,random,log});this.busy=false;
+    Object.assign(this,{stateFile,buffer,social,settingsFor,personaFor,decide,send,searchFor,techNewsFor,isReady,selfIdFor,now,random,log});this.busy=false;
     this.state=fs.existsSync(stateFile)?JSON.parse(fs.readFileSync(stateFile,'utf8')):{version:1,chats:{}};
     if(this.state.version!==1||!this.state.chats||typeof this.state.chats!=='object'||Array.isArray(this.state.chats))throw Error('PROACTIVE_STATE_INVALID');
     for(const item of Object.values(this.state.chats))if(!item||!Number.isFinite(item.nextAt)||!Number.isSafeInteger(item.cycles)||item.cycles<0||!Array.isArray(item.history))throw Error('PROACTIVE_STATE_INVALID');
     for(const [key,item] of Object.entries(this.state.chats)){
       if(item.history.length>12||item.history.some(entry=>!entry||typeof entry.text!=='string'||entry.text.length>1200||!Number.isFinite(entry.at)))throw Error('PROACTIVE_STATE_INVALID');
       const job=item.job;if(!job)continue;
+      if(job.voiceUnavailable!==undefined&&typeof job.voiceUnavailable!=='boolean')throw Error('PROACTIVE_STATE_INVALID');
       if(!/^[a-f0-9]{64}$/.test(job.id??'')||!Number.isFinite(job.createdAt)||!Number.isFinite(job.expiresAt)||job.expiresAt-job.createdAt>600000||
         !/^[a-f0-9]{64}$/.test(job.snapshot??'')||!job.evaluating&&(typeof job.text!=='string'||job.text.length>1200||!job.message||
         buildConversationKey(job.message.platform,job.message.kind,job.message.conversation_id)!==key))throw Error('PROACTIVE_STATE_INVALID');
@@ -52,7 +59,7 @@ export class ProactiveEngine {
   eligible(key,policy,now){
     const rows=this.buffer.recent(key,this.buffer.maxPerChat);
     const last=rows.at(-1)?.timestamp*1000||0;
-    return policy.enabled&&withinProactiveWindow(now,policy)&&!this.buffer.unread(key,1).length&&!this.buffer.pendingReplies.has(key)&&
+    return !this.social.participation?.quiet(key,this.selfIdFor()||rows.at(-1)?.self_id)&&policy.enabled&&withinProactiveWindow(now,policy)&&!this.buffer.unread(key,1).length&&!this.buffer.pendingReplies.has(key)&&
       now-last>=policy.idleMinutes*60000&&!declinedProactive(rows)&&rows.at(-1)?.delivery_status!=='unconfirmed';
   }
   notice(key,id){this.buffer.setContextNotice(key,{id,text:'本机上一轮主动发言草稿已取消，未确认提交到微信；不能将原生会话中的那段草稿当成已经说过的话。'});}
@@ -75,7 +82,7 @@ export class ProactiveEngine {
         if(!policy.enabled){if(item&&item.signature!==signature){if(item.job&&!item.job.dispatching){this.notice(key,item.job.id);item.job=null;}item.signature=signature;this.save();}continue;}
         if(!item){item=this.state.chats[key]={nextAt:nextProactiveAt(now,policy,this.random),cycles:0,history:[],signature};this.save();continue;}
         if(item.signature!==signature&&!item.job?.dispatching){item.signature=signature;item.nextAt=nextProactiveAt(now,policy,this.random);item.job=null;this.save();continue;}
-        if(item.job?.evaluating){this.notice(key,item.job.id);item.job=null;item.nextAt=nextProactiveAt(now,policy,this.random);this.save();continue;}
+        if(item.job?.evaluating&&!item.job.voiceUnavailable){this.notice(key,item.job.id);item.job=null;item.nextAt=nextProactiveAt(now,policy,this.random);this.save();continue;}
         if(item.job&&this.now()>item.job.expiresAt){this.notice(key,item.job.id);item.job=null;item.nextAt=nextProactiveAt(now,policy,this.random);this.save();continue;}
         if(!item.job&&(now<item.nextAt||!this.eligible(key,policy,now)))continue;
         await this.social.withConversationLock(key,async()=>this.run(key,policy,item));
@@ -88,40 +95,58 @@ export class ProactiveEngine {
       self_id:String(this.selfIdFor()||rows.at(-1)?.self_id||''),sender_id:'local-scheduler',sender_name:'本机主动发言'};
     if(!message.self_id)return;
     let job=item.job;
-    if(!job){
-      const mode=policy.mode==='mixed'?['greeting','news','meme'][item.cycles%3]:policy.mode;
-      job=item.job={id:hash(key+'\0'+item.nextAt+'\0'+item.cycles),mode,createdAt:this.now(),expiresAt:this.now()+600000,
+    if(!job||job.evaluating&&job.voiceUnavailable){
+      if(!job){
+       const mode=policy.mode==='mixed'?['greeting','news','meme'][item.cycles%3]:policy.mode;
+       job=item.job={id:hash(key+'\0'+item.nextAt+'\0'+item.cycles),mode,createdAt:this.now(),expiresAt:this.now()+600000,
         snapshot:conversationSnapshot(rows),personaDigest:hash(JSON.stringify([persona.personaName,persona.persona])),evaluating:true};
-      item.cycles++;item.nextAt=nextProactiveAt(this.now(),policy,this.random);this.save();
+       item.cycles++;item.nextAt=nextProactiveAt(this.now(),policy,this.random);this.save();
+      }
+      const mode=job.mode,settings=await this.settingsFor(),voice=mode==='greeting'&&(settings.wechat??settings).voice?.enabled===true&&!job.voiceUnavailable;
       let search=null;
-      if(mode!=='greeting'&&policy.useSearch){
+      if(mode==='tech'){
+        if(policy.useSearch)try{search=await this.techNewsFor(message,{topics:policy.topics,excludeDigests:item.history.filter(entry=>this.now()-entry.at<7*86400000).map(entry=>entry.topicDigest).filter(Boolean)});}catch{search={status:'unavailable'};}
+        if(search?.status!=='ready'||!search.items?.length){item.job=null;this.save();this.log(`[Proactive] ${key} skipped tech_news=${search?.status??'search_disabled'}`);return;}
+      }else if(mode!=='greeting'&&policy.useSearch){
         const day=localTime(this.now()).slice(0,10),query=mode==='meme'?`帮我搜索 ${day} 最近热门 新梗 meme 含义`:`帮我搜索 ${day} 最新 热点 新闻`;
         try{search=await this.searchFor(message,[{text:query}],job.id);}catch{search={status:'unavailable'};}
       }
       const metadata={persona:persona.persona,personaName:persona.personaName,conversationName:message.conversation_name,images:[],batchId:job.id,searchOptOut:mode==='greeting'||!policy.useSearch||search?.status==='unavailable'};
-      if(search?.status==='ready'){metadata.searchTicket=search.id;metadata.searchContext=search.context;
+      if(voice)metadata.proactiveVoice=true;
+      if(job.voiceUnavailable)metadata.voiceUnavailable=true;
+      if(mode==='tech')metadata.webReaderUrls=search.items.map(item=>item.url);
+      if(search?.status==='ready'&&mode!=='tech'){metadata.searchTicket=search.id;metadata.searchContext=search.context;
         job.topicDigest=hash(search.context.slice(Math.max(0,search.context.indexOf('\n1.'))));}
       if(job.topicDigest&&item.history.some(entry=>entry.topicDigest===job.topicDigest&&this.now()-entry.at<7*86400000)){
         delete metadata.searchTicket;delete metadata.searchContext;delete job.topicDigest;search=null;job.mode='greeting';
       }
       const notice=this.buffer.contextNotices.get(key);
-      const prompt=buildProactivePrompt({key,rows,mode:job.mode,now:this.now(),searchStatus:search?.status,recentTopics:item.history})+
-        (notice?'\n本机发送状态说明：'+quote(notice.text):'');
+      const prompt=buildProactivePrompt({key,rows,mode:job.mode,now:this.now(),searchStatus:search?.status,recentTopics:item.history,topics:policy.topics,news:search,voice})+
+        (notice?'\n本机发送状态说明：'+quote(notice.text):'')+(job.voiceUnavailable?'\n'+NONVOICE_REPLY_NOTICE:'');
       job.noticeId=notice?.id;
-      metadata.memeLibraryDisabled=true; // This public scheduler keeps its existing text-only contract.
+      metadata.memeLibraryDisabled=true; // No scheduled sticker tool sends; text and context voice use this outbox.
       let result;
       try{({result}=await resolveSocialDecision({rawOutput:await this.decide(key,prompt,metadata),key,metadata,decide:(...args)=>this.decide(...args),log:this.log}));}
       catch(error){this.notice(key,job.id);item.job=null;this.save();this.log(`[Proactive] ${key} decision_failed`);return;}
-      if(result.decision!=='RESPOND'||item.history.some(entry=>entry.text.trim()===result.text.trim()&&this.now()-entry.at<86400000)){
+      if(result.decision!=='RESPOND'||hasVoiceControl(result.text)&&(!voice||result.textParts?.length>1)||item.history.some(entry=>entry.text.trim()===result.text.trim()&&this.now()-entry.at<86400000)){
         if(result.decision==='RESPOND')this.notice(key,job.id);
         item.job=null;this.save();this.log(`[Proactive] ${key} skipped decision=${result.decision}`);return;
       }
+      if(mode==='tech'){
+        const source=selectTechNewsEvidence(result.text,search,this.now());
+        if(!source||item.history.some(entry=>entry.topicDigest===source.digest&&this.now()-entry.at<7*86400000)){this.notice(key,job.id);item.job=null;this.save();this.log(`[Proactive] ${key} skipped unverified_or_repeated_tech_news`);return;}
+        job.newsSource=source;job.topicDigest=source.digest;
+      }
+      result.text=cleanMalformedChatDecoration(result.text);
+      if(!result.text.trim()){item.job=null;this.save();return;}
+      if(persona.personaName==='大肥鱼'&&!/\[语音/.test(result.text))result.text=nativeWechatFaces(result.text);
       Object.assign(job,{evaluating:false,text:result.text,message});this.save();
     }
     if(this.finishRecorded(key,item))return;
     if ([job.text, ...(job.textParts ?? [])].some(text=>hasStickerControl(text)||hasReasoningControl(text)||hasReplyProtocolControl(text))) {
       this.notice(key,job.id); item.job=null; this.save(); this.log(`[Proactive] ${key} skipped invalid_sticker_reference`); return;
     }
+    if(job.mode==='tech'&&!selectTechNewsEvidence(job.text,{status:'ready',items:job.newsSource?[job.newsSource]:[]},this.now())){this.notice(key,job.id);item.job=null;this.save();return;}
     const fresh=await this.settingsFor(),current=proactivePolicy(fresh.wechat??fresh,key),livePersona=await this.personaFor(key);
     if(!this.eligible(key,current,this.now())||proactivePolicyKey(current)!==item.signature||hash(JSON.stringify([livePersona.personaName,livePersona.persona]))!==job.personaDigest||conversationSnapshot(this.buffer.recent(key,this.buffer.maxPerChat))!==job.snapshot){
       this.notice(key,job.id);item.job=null;this.save();this.log(`[Proactive] ${key} cancelled_context_changed`);return;
@@ -130,13 +155,18 @@ export class ProactiveEngine {
     let delivery;
     try{delivery=await this.send(job.message,job.text,{deliveryId:job.id,source:'proactive',contextId:job.snapshot});}
     catch(error){
+      if(hasVoiceControl(job.text)&&/^VOICE_[A-Z_]+$/.test(error.code??'')&&error.data?.attempted===false&&error.data?.phase==='voice-synthesis'){
+        item.job={...job,id:hash(job.id+'\0proactive-nonvoice-v1'),voiceUnavailable:true,evaluating:true,dispatching:false};delete item.job.text;this.save();
+        this.log(`[Proactive] ${key} voice_synthesis_failed fallback=choose-nonvoice`);return;
+      }
+      if(error.code==='VOICE_CHAT_PAUSED'){this.notice(key,job.id);item.job=null;this.save();return;}
       if(['PROACTIVE_NOT_ALLOWED','PROACTIVE_CONTEXT_CHANGED','CONVERSATION_NOT_ALLOWED'].includes(error.code)){this.notice(key,job.id);item.job=null;}
       this.save();this.log(`[Proactive] ${key} send_pending code=${error.code??'unknown'}`);return;
     }
-    const at=this.now(),status=delivery?.delivered==='unconfirmed'?'unconfirmed':'confirmed';
-    this.buffer.completeReply(key,{deliveryId:job.id,throughId:'proactive-'+job.id,noticeId:job.noticeId},{...job.message,sender_id:job.message.self_id,text:job.text,
-      timestamp:at/1000,delivery_status:status,proactive:true});
-    this.social.noteOutgoing(key,at);item.history.push({at,text:job.text,mode:job.mode,topicDigest:job.topicDigest,deliveryId:job.id});item.history=item.history.slice(-12);
+    const at=this.now(),status=delivery?.delivered==='unconfirmed'?'unconfirmed':'confirmed',voice=hasVoiceControl(job.text),sentText=delivery?.spokenText??(voice?(status==='confirmed'?'[已发送主动语音]':'[主动语音送达待确认]'):job.text);
+    this.buffer.completeReply(key,{deliveryId:job.id,throughId:'proactive-'+job.id,noticeId:job.noticeId},{...job.message,sender_id:job.message.self_id,text:sentText,
+      timestamp:at/1000,delivery_status:status,proactive:true,reply_kind:voice?'voice':'text'});
+    this.social.noteOutgoing(key,at);item.history.push({at,text:sentText,mode:job.mode,topicDigest:job.topicDigest,deliveryId:job.id});item.history=item.history.slice(-12);
     item.job=null;this.save();this.log(`[Proactive] ${key} delivery=${status} mode=${job.mode}`);
   }
 }

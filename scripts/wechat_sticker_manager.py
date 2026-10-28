@@ -9,7 +9,8 @@ class ManagerError(Exception):
     def __init__(self,code,status=400):self.code=code;self.status=status;super().__init__(code)
 
 class StickerManager:
-    def __init__(self,pool):self.pool=pool
+    def __init__(self,pool,*,limit=MAX_ENTRIES,max_frames=64,max_pixels=80_000_000):
+        self.pool=pool;self.limit=limit;self.max_frames=max_frames;self.max_pixels=max_pixels
     def active(self):
         if not self.pool.active():raise ManagerError('STICKER_MANAGER_ACCOUNT_CHANGED',409)
     def revision(self,state):
@@ -32,7 +33,7 @@ class StickerManager:
                               'manual':item.get('manual') is True,'animated':item.get('animated',False),'bytes':item['fields']['len'],
                               'width':item['fields']['width'],'height':item['fields']['height'],'addedAt':item['receivedAt']})
             self.active()
-            return {'scope':self.pool.account_key,'revision':self.revision(state),'limit':MAX_ENTRIES,'count':len(items),
+            return {'scope':self.pool.account_key,'revision':self.revision(state),'limit':self.limit,'count':len(items),
                     'waiting':len(state.get('waiting',{}))+len(state.get('archive',{})),'items':items}
     def image(self,digest,scope,animated=False):
         self.active()
@@ -67,7 +68,7 @@ class StickerManager:
             try:
                 with Image.open(io.BytesIO(raw)) as image:
                     count=getattr(image,'n_frames',1)
-                    if image.format not in ('GIF','PNG','JPEG','WEBP') or not 0<image.width<=4096 or not 0<image.height<=4096 or count>64 or count*image.width*image.height>80_000_000:raise ValueError()
+                    if image.format not in ('GIF','PNG','JPEG','WEBP') or not 0<image.width<=4096 or not 0<image.height<=4096 or count>self.max_frames or count*image.width*image.height>self.max_pixels:raise ValueError()
                     width,height=image.size
                     for index in range(count):image.seek(index);image.load()
                 raw=native_gif_bytes(raw)
@@ -76,7 +77,7 @@ class StickerManager:
             digest=hashlib.sha256(raw).hexdigest();md5=hashlib.md5(raw).hexdigest()
             with self.pool.lock:
                 state=self.pool.read();self.check(body,state)
-                if digest not in state['entries'] and len(state['entries'])>=MAX_ENTRIES:raise ManagerError('STICKER_MANAGER_FULL',409)
+                if digest not in state['entries'] and len(state['entries'])>=self.limit:raise ManagerError('STICKER_MANAGER_FULL',409)
                 old=state['entries'].get(digest,state.get('waiting',{}).get(digest,state.get('archive',{}).get(digest,{})))
                 item={**old,'fields':{'md5':md5,'len':len(raw),'width':width,'height':height,'type':2,'productid':''},
                       'sourceMd5':old.get('sourceMd5',md5),'receivedAt':int(time.time()),'sources':old.get('sources',{}),

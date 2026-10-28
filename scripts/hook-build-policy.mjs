@@ -13,5 +13,6 @@ export function verifyHookBuild(directory) {
   const dll = fs.readFileSync(path.join(directory, 'version.dll'));
   const actual = crypto.createHash('sha256').update(dll).digest('hex');
   if (actual !== build.sha256) throw new Error('Hook DLL does not match build.json; packaging stopped.');
+  if(build.voiceSha256&&crypto.createHash('sha256').update(fs.readFileSync(path.join(directory,'WeChatVoice.dll'))).digest('hex')!==build.voiceSha256)throw new Error('Voice Hook DLL hash mismatch.');
   return build;
 }

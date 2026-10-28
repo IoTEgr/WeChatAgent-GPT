@@ -1,6 +1,6 @@
-# Windows 安装发行版 0.4.1
+# Windows 安装发行版 0.4.2（GPT 扩展版）
 
-安装器为 WeChatAgent-Setup-0.4.1-x64.exe，适用 Windows 10/11 x64。包含桌面应用、Node.js、Python、读取依赖，以及维护者已授权的匹配微信与原生发送/自动连接组件。匹配微信 4.1.10.27，桥接插件 SDK 为 0.2.0-rc.2；DSH 桌面程序独立安装，不包含在安装包中。
+安装器为 WeChatAgent-Setup-0.4.2-x64.exe，适用 Windows 10/11 x64。包含桌面应用、Node.js、Python、读取与语音编码依赖，以及匹配微信和原生发送、引用、拍一拍、@ 组件。匹配微信 4.1.10.27，桥接插件 SDK 为 0.2.0-rc.2。DSH 桌面程序与 GPT 语音所需的兼容 Codex 独立安装，不包含在安装包中。下载位置为 [本仓库 Releases](https://github.com/IoTEgr/WeChatAgent-GPT/releases/latest)。
 
 ## 安装与升级
 
@@ -15,6 +15,18 @@
 六项主导航为概览、聊天、人格、能力、表情包、设置。单聊任务、授权和工作区集中在聊天详情；管理员和反馈语录位于助手设置，搜索与网页阅读位于能力，诊断与日志位于设置。详见[界面导航](UI_LAYOUT.md)、[远程助手](ASSISTANT_REMOTE.md)、[文件收发](FILE_TRANSFER.md)、[语录管理](ASSISTANT_FEEDBACK.md)。
 
 ## 构建
+
+源码需另行准备以下资源，个人配置与运行状态不要复制进打包目录：
+
+- `state/hook/native/`：已验证的 `version.dll`、可选语音组件 `WeChatVoice.dll` 与构建清单。
+- `state/hook/wechat-4.1.10.27/`：`Weixin.exe` 与对应版本的客户端资源。
+- `components/weflow-cli/resources/key/win32/x64/wx_key.dll`：读取组件的登录辅助资源。
+- `components/WeChat-Hook/`：按组件说明准备的外部原始项目；不进入本仓库源码提交。
+- `assets/native-interactions/`：由 `scripts/build-interaction-service.ps1` 构建，并完成版本匹配和显示验收的引用 / 拍一拍服务。
+- `state/hook/mentions/`：由 `scripts/build-mentions.ps1` 构建的真实 @ 组件及清单。
+- `state/hook/interactions/`：打包校验的历史拍一拍兼容组件；当前运行使用原生交互服务。
+
+编译脚本检查源码、微信版本与二进制哈希；功能验收标记不能代替另一台物理设备上的真实安装验收。未完成原生功能验收时，不要伪造验收标记。
 
 维护者准备已授权的匹配微信、Hook 编译产物、wx_key.dll 和锁定依赖后，按根 package.json 的版本构建。无需准备 DSH 桌面程序或设置 WECHATAGENT_DSH_SOURCE；发行清单标记 dshBundled=false。
 

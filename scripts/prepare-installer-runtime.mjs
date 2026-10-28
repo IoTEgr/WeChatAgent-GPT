@@ -23,13 +23,13 @@ function unpack(file, target) {
 const archive = path.join(cache, 'python-3.13.16-embed-amd64.zip');
 await download('https://www.python.org/ftp/python/3.13.16/python-3.13.16-embed-amd64.zip', archive, '97dae5274cc54867065e8d5a3226e48c35017ed332a0fdb0e27d5b5821961297');
 unpack(archive, runtime);
-const packages = [['sqlcipher3','0.6.2'],['cryptography','50.0.2'],['zstandard','0.25.0'],['pycryptodome','3.23.0'],['Pillow','12.3.0'],['imageio-ffmpeg','0.6.0'],['cffi','2.0.0'],['pycparser','2.23']];
+const packages = [['sqlcipher3','0.6.2'],['cryptography','50.0.2'],['zstandard','0.25.0'],['pycryptodome','3.23.0'],['Pillow','12.3.0'],['imageio-ffmpeg','0.6.0'],['cffi','2.1.1'],['pycparser','3.12'],['aiohttp','3.14.5'],['aiohappyeyeballs','2.7.1'],['aiosignal','1.4.0'],['attrs','26.1.0'],['certifi','2026.10.23'],['frozenlist','1.8.0'],['idna','3.20'],['multidict','7.2.1'],['propcache','0.5.4'],['tabulate','0.10.0'],['typing-extensions','4.16.0'],['yarl','1.25.1'],["aioice", "0.10.2"],["aiortc", "1.15.0"],["av", "17.1.0"],["dnspython", "2.9.0"],["google-crc32c", "1.9.0"],["ifaddr", "0.2.0"],["pyee", "16.0.0"],["pylibsrtp", "1.0.0"],["pyopenssl", "26.4.0"]];
 const site = path.join(runtime, 'Lib', 'site-packages'); fs.mkdirSync(site, { recursive: true });
 const locked = [];
 for (const [name, version] of packages) {
   const response = await fetch(`https://pypi.org/pypi/${name}/${version}/json`); if (!response.ok) throw new Error('Dependency metadata unavailable: ' + name);
   const metadata = await response.json();
-  const candidates = metadata.urls.filter(file => /-cp313-cp313-win_amd64\.whl$|-cp(?:37|39|311)-abi3-win_amd64\.whl$|-py3-none-(?:any|win_amd64)\.whl$/.test(file.filename));
+  const candidates = metadata.urls.filter(file => /-cp313-cp313-win_amd64\.whl$|-cp(?:37|39|310|311)-abi3-win_amd64\.whl$|-py3-none-(?:any|win_amd64)\.whl$/.test(file.filename));
   const wheel = candidates.find(file => /cp313-cp313/.test(file.filename)) ?? candidates[0];
   if (!wheel) throw new Error('No Python 3.13 Windows wheel: ' + name);
   const file = path.join(cache, wheel.filename); await download(wheel.url, file, wheel.digests.sha256); unpack(file, site);
@@ -38,6 +38,6 @@ for (const [name, version] of packages) {
 }
 fs.writeFileSync(path.join(runtime, 'python313._pth'), 'python313.zip\n.\nLib/site-packages\nimport site\n');
 fs.writeFileSync(path.join(runtime, 'DEPENDENCIES.json'), JSON.stringify(locked, null, 2));
-const probe = spawnSync(path.join(runtime, 'python.exe'), ['-c', 'import sys,sqlcipher3,cryptography,zstandard,Crypto,PIL,imageio_ffmpeg; from sqlcipher3 import dbapi2; db=dbapi2.connect(":memory:"); db.execute("select 1").fetchone(); print("READER_RUNTIME_OK",sys.version.split()[0])'], { windowsHide: true, encoding: 'utf8', timeout: 30000 });
+const probe = spawnSync(path.join(runtime, 'python.exe'), ['-c', 'import sys,sqlcipher3,cryptography,zstandard,Crypto,PIL,imageio_ffmpeg,aiortc,av; from sqlcipher3 import dbapi2; db=dbapi2.connect(":memory:"); db.execute("select 1").fetchone(); print("READER_RUNTIME_OK",sys.version.split()[0])'], { windowsHide: true, encoding: 'utf8', timeout: 30000 });
 if (probe.status !== 0) throw new Error(probe.stderr || 'Bundled Python runtime failed');
 console.log(probe.stdout.trim());

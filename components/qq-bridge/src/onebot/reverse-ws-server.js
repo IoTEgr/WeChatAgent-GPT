@@ -1,6 +1,7 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
+import {VOICE_TIMING} from '../core/voice-protocol.js';
 
 const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const MAX_FRAME = 1024 * 1024;
@@ -115,11 +116,11 @@ export class ReverseOneBotServer extends EventEmitter {
     catch (error) { this.emit('invalid', `event_handler_failed:${error?.message ?? error}`); }
   }
 
-  action(action, params) {
+  action(action, params, {timeoutMs=this.config.timeoutMs}={}) {
     if (!this.socket || !this.connected) return Promise.reject(new Error('OneBot disconnected'));
     const echo = crypto.randomUUID();
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { this.pending.delete(echo); reject(new Error(`OneBot action timeout: ${action}`)); }, this.config.timeoutMs);
+      const timer = setTimeout(() => { this.pending.delete(echo); reject(new Error(`OneBot action timeout: ${action}`)); }, Math.min(VOICE_TIMING.actionMs,Math.max(1,Number(timeoutMs)||this.config.timeoutMs)));
       this.pending.set(echo, { resolve, reject, timer });
       this.socket.write(frame(1, JSON.stringify({ action, params, echo })), (error) => {
         if (error && this.pending.delete(echo)) { clearTimeout(timer); reject(error); }

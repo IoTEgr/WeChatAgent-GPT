@@ -1,0 +1,37 @@
+import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
+import {SocialEngine} from '../components/qq-bridge/src/core/social-engine.js';import {MessageBuffer,replyDeliveryParts} from '../components/qq-bridge/src/core/message-buffer.js';import {hasVoiceControl} from '../components/qq-bridge/src/core/voice-protocol.js';
+const voice='[语音回复:群友刚下班，想听一句轻松的接话]',oldNotice='语音这次没生成成功，刚才那条没发出去。',key='wechat:private:123',sticker='f'.repeat(64);
+const wait=async predicate=>{for(let i=0;i<800&&!predicate();i++)await new Promise(r=>setTimeout(r,5));assert(predicate(),'expected delivery progress');};
+const failed=()=>Object.assign(Error('VOICE_LIVE_NO_SPEECH'),{code:'VOICE_LIVE_NO_SPEECH',data:{attempted:false,phase:'voice-synthesis'}});
+function fixture(t,options={}){
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'voice-alternative-')),file=path.join(root,'messages.json'),buffer=new MessageBuffer(file),sent=[],calls=[],stickers=[];let sequence=0;
+ const engine=new SocialEngine({buffer,batchMs:1,privateMinIntervalMs:0,minIntervalMs:0,maxPerMinute:100,maxPerTenMinutes:100,personaNameFor:()=> '大肥鱼',contextVoiceFor:()=>true,stickerPolicyFor:()=>({enabled:false}),decide:async(_key,_prompt,metadata)=>{calls.push(metadata);return metadata.voiceUnavailable?'RESPOND: 先歇会儿[愉快]':'RESPOND: '+voice;},send:async(_row,text,delivery)=>{sent.push({text,id:delivery.deliveryId});if(hasVoiceControl(text))throw failed();return {confirmed:true};},...options});
+ t.after(()=>{engine.stop();fs.rmSync(root,{recursive:true,force:true});});return {root,file,buffer,sent,calls,stickers,engine,message(text='终于下班啦',kind='private'){return {platform:'wechat',kind,conversation_id:'123',sender_id:'7',self_id:'99',message_id:String(++sequence).padStart(64,'a'),text,timestamp:Date.now()/1000};}};
+}
+test('voice failure makes a new nonvoice decision with distinct delivery identity and preserves the original input',async t=>{
+ const f=fixture(t);f.engine.receive(f.message());await wait(()=>f.buffer.unread(key).length===0&&f.sent.length===2);assert(f.calls[1].voiceUnavailable);assert(!f.calls[1].contextVoice);assert.equal(f.sent[1].text,'先歇会儿[愉快]');assert.notEqual(f.sent[0].id,f.sent[1].id);assert(!f.sent.some(row=>row.text===oldNotice));assert.equal(f.buffer.contextNotices.has(key),false);
+ f.engine.receive(f.message('到家了'));await wait(()=>f.sent.length===4&&f.buffer.unread(key).length===0);assert.equal(f.calls[2].voiceUnavailable,undefined);assert(f.calls[2].contextVoice);assert(hasVoiceControl(f.sent[2].text));
+});
+test('fallback can choose one prepared local sticker rather than a failure message',async t=>{
+ const deliveries=[];const f=fixture(t,{stickerPolicyFor:()=>({enabled:true,labelCache:true}),stickerChoicesFor:async()=>[{id:sticker,description:'下班放松',tags:['daily']}],stickerSelect:offered=>offered,decide:async(_k,_p,m)=>m.voiceUnavailable?'RESPOND: [STICKER:S1]':'RESPOND: '+voice,sendSticker:async(_m,id)=>{deliveries.push(id);return {confirmed:true};}});f.engine.receive(f.message());await wait(()=>deliveries.length===1&&f.buffer.mediaReplies.size===0);assert.deepEqual(deliveries,[sticker]);assert.equal(f.sent.length,1);assert.equal(f.buffer.recent(key).filter(r=>r.outgoing).length,1);assert.equal(f.buffer.recent(key).find(r=>r.outgoing).sticker_id,sticker);
+});
+for(const outcome of ['returned-unconfirmed','error-attempted'])test('an uncertain submitted voice never switches to another modality: '+outcome,async t=>{
+ let attempts=0;const f=fixture(t,{send:async()=>{attempts++;if(outcome==='returned-unconfirmed')return {delivered:'unconfirmed'};throw Object.assign(Error('VOICE_LIVE_TIMEOUT'),{code:'VOICE_LIVE_TIMEOUT',data:{attempted:true,phase:'voice-synthesis'}});}});f.engine.receive(f.message());await wait(()=>attempts===1&&f.engine.running.size===0);assert.equal(f.calls.length,1);assert(!f.buffer.contextNotices.get(key)?.voiceUnavailable);await new Promise(r=>setTimeout(r,25));assert.equal(attempts,1);
+});
+test('a fallback response that chooses voice again receives one repair and never regenerates audio',async t=>{
+ let alternative=0;const f=fixture(t,{decide:async(_k,_p,m)=>m.voiceUnavailable?++alternative===1?'RESPOND: '+voice:'RESPOND: (￣▽￣)':'RESPOND: '+voice});f.engine.receive(f.message());await wait(()=>f.sent.length===2&&f.buffer.unread(key).length===0);assert.equal(alternative,2);assert.equal(f.sent.filter(r=>hasVoiceControl(r.text)).length,1);assert.equal(f.sent[1].text,'(￣▽￣)');
+});
+test('the fallback restriction and unread input survive restart before the alternative decision',async t=>{
+ const f=fixture(t,{send:async(_m,text)=>{f.sent.push({text});f.engine.batchMs=60000;throw failed();}});f.engine.receive(f.message());await wait(()=>f.buffer.contextNotices.get(key)?.voiceUnavailable&&f.engine.running.size===0);f.engine.stop();const restored=new MessageBuffer(f.file);assert.equal(restored.pendingReplies.size,0);assert.equal(restored.pendingRequests.size,0);assert.equal(restored.unread(key).length,1);const sent=[];
+ const next=new SocialEngine({buffer:restored,batchMs:1,privateMinIntervalMs:0,decide:async(_k,_p,m)=>{assert(m.voiceUnavailable);return 'RESPOND: [愉快]';},send:async(_m,text)=>{sent.push(text);return {confirmed:true};}});t.after(()=>next.stop());next.replay(key);await wait(()=>sent.length===1&&restored.unread(key).length===0);assert.deepEqual(sent,['[愉快]']);assert.equal(restored.contextNotices.has(key),false);
+});
+test('an old queued failure template is migrated without ever sending the template',async t=>{
+ const f=fixture(t),message=f.message(),row=f.buffer.append(message),deliveryId='d'.repeat(64),result={decision:'RESPOND',text:oldNotice};f.buffer.rememberReply(key,{deliveryId,result,throughId:row.id,message,sending:true,parts:replyDeliveryParts(result,deliveryId).map(p=>({...p,voiceFallback:true,voiceFailureCode:'VOICE_LIVE_TIMEOUT'}))});f.engine.decisions.set(key,f.buffer.pendingReplies.get(key));f.engine.replay(key);await wait(()=>f.sent.length===1&&f.buffer.unread(key).length===0);assert.equal(f.sent[0].text,'先歇会儿[愉快]');assert.notEqual(f.sent[0].id,deliveryId);assert(!f.sent.some(r=>r.text===oldNotice));
+});
+test('already delivered text preceding a failed voice is not duplicated or used to acknowledge the alternative',async t=>{
+ const f=fixture(t,{decide:async(_k,_p,m)=>m.voiceUnavailable?'RESPOND: (￣▽￣)':'RESPOND: 先放下包\n\n[语音TTS:准备开口啦]'});f.engine.receive(f.message());await wait(()=>f.sent.length===3&&f.buffer.unread(key).length===0);assert.deepEqual(f.sent.map(r=>r.text),['先放下包','[语音TTS:准备开口啦]','(￣▽￣)']);assert.equal(new Set(f.sent.map(r=>r.id)).size,3);assert.deepEqual(f.buffer.recent(key).filter(r=>r.outgoing).map(r=>r.text),['先放下包','(￣▽￣)']);
+});
+test('a quiet request during a failed voice cancels the fallback without an acknowledgment',async t=>{
+ let rejectVoice;const rendering=new Promise((_r,reject)=>{rejectVoice=reject;});const f=fixture(t,{send:async(_m,text)=>{f.sent.push({text});return rendering;}});const groupKey='wechat:group:123';f.engine.receive(f.message('接句话','group'));await wait(()=>f.sent.length===1);f.engine.receive(f.message('闭嘴','group'));rejectVoice(failed());await wait(()=>f.engine.running.size===0);assert.equal(f.calls.length,1);assert.equal(f.sent.length,1);assert(!f.buffer.contextNotices.get(groupKey)?.voiceUnavailable);assert.equal(f.engine.participation.quiet(groupKey,'99'),true);
+});
+

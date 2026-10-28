@@ -1,3 +1,6 @@
+import {VoiceSender} from './voice-sender.mjs';
+import {InteractionSender,runMention} from './interaction-sender.mjs';
+import {hasVoiceControl,voiceRequest} from '../components/qq-bridge/src/core/voice-protocol.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { PAT_TYPE, FORWARD_TYPE, QUOTE_TYPE, normalizeForwardedRecord, normalizeQuoteReply } from '../components/qq-bridge/src/core/wechat-events.js';
@@ -69,6 +72,9 @@ export class HookOneBot {
     this.seen = new Map();
     this.targetsSending = new Set();
     this.textDeliveries=new TextDeliveryStore(path.join(directory,'state/text-deliveries'));
+    this.voiceSender=new VoiceSender(this);
+    this.interactionSender=new InteractionSender(this);
+    this.mentionCommand=runMention;
     this.stickerPending = new Map();
     this.stickerStateFile=path.join(directory,'state/sticker-delivery-pending.json');
     if(fs.existsSync(this.stickerStateFile)){
@@ -92,6 +98,7 @@ export class HookOneBot {
     this.nativeToken = fs.readFileSync(path.join(this.directory, 'state', 'hook', 'native-token.txt'), 'utf8').trim();
     if (!/^[a-f0-9]{64}$/.test(this.nativeToken)) fail('HOOK_TOKEN_MISSING');
   }
+  voiceFail(code,data){throw new AdapterError(code,data);}
   allowed(kind, target) { return this.project.wechat.whitelist[kind === 'group' ? 'groups' : 'private'].map(String).includes(String(target)); }
   async json(base, route, options = {}, timeout = 4000) {
     const response = await this.fetch(base.replace(/\/$/, '') + route, {
@@ -120,11 +127,17 @@ export class HookOneBot {
     this.startupStage='hook-health';
     const native = await this.native('/WeChatAgent/health').catch(error=>{throw healthError(error,'HOOK','hook-health',this.hook.baseUrl);});
     if(!native || typeof native!=='object')fail('HOOK_HEALTH_INVALID_RESPONSE');
-    this.status.native_sticker_send = native.nativeStickerSend===true;this.status.native_file_send=native.nativeFileSend===true;this.status.fileTransfer='durable-outbox-v1';
+    this.status.native_sticker_send = native.nativeStickerSend===true;this.status.native_file_send=native.nativeFileSend===true;this.status.native_mention_send=native.nativeMentionSend===true;this.status.fileTransfer='durable-outbox-v1';
     this.status.hook_connected = true; this.status.version = native.version ?? '';
     const accountProblem=hookAccountProblem(native,reader.accountDirectory,this.hook.expectedVersion);
     if(accountProblem)fail(accountProblem);
     this.status.hook_account_verified = true;
+    if(this.project.wechat?.interactions?.enabled===true&&(!this.mentionProbe||Date.now()-this.mentionProbe.at>30000)){
+      const result=await this.mentionCommand(this.directory,null,{probe:true}).catch(()=>null);this.mentionProbe={at:Date.now(),ready:result?.ready===true&&result?.verified===true};
+    }
+    this.status.native_mention_send=this.project.wechat?.interactions?.enabled===true&&this.mentionProbe?.ready===true;
+    const voiceHealth=this.project.wechat?.voice?.enabled===true?await this.voiceSender.health().catch(()=>null):null;
+    this.status.native_voice_send=voiceHealth?.ready===true&&(!voiceHealth.version||voiceHealth.version===this.hook.expectedVersion);
     return { account: reader.accountDirectory.toLowerCase(), selfId: onebotId(reader.ownWxid) };
   }
   async waitForNative({timeoutMs=35000,intervalMs=250,onWaiting=()=>{}}={}) {
@@ -148,18 +161,31 @@ export class HookOneBot {
     if (matches.length !== 1 || matches[0].username === this.ownWxid) fail('TARGET_MAPPING_AMBIGUOUS_OR_MISSING');
     return matches[0].username;
   }
-  async messages(wxid) {
-    const result = await this.reader('/api/v1/messages?talker=' + encodeURIComponent(wxid) + '&limit=100');
+  async messages(wxid,limit=100) {
+    if(!Number.isSafeInteger(limit)||limit<1||limit>300)fail('INVALID_MESSAGE_LIMIT');
+    const result = await this.reader('/api/v1/messages?talker=' + encodeURIComponent(wxid) + '&limit='+limit);
     if (!Array.isArray(result.messages)) fail('INVALID_RECEIPT_RESPONSE');
     return result.messages;
   }
-  async send(kind, target, text, deliveryId, proactive) {
+  async send(kind, target, text, deliveryId, proactive, mentionReference) {
     const key = `${kind}:${target}`;
     if (this.targetsSending.has(key) || this.targetsSending.size >= (this.hook.maxConcurrentSends ?? 4)) fail('SENDER_BUSY');
     this.targetsSending.add(key);
     try {
       const identity = await this.checkNative();
       const wxid = await this.resolveTarget(kind, target);
+      let mention;
+      if(mentionReference!==undefined){
+        if(kind!=='group'||proactive||!/^[a-f0-9]{64}$/.test(mentionReference)||typeof text!=='string'||!text.trim()||text.length>4000||!/^[a-f0-9]{64}$/.test(deliveryId??'')||!this.status.native_mention_send||this.project.wechat?.interactions?.enabled!==true)fail('MENTION_UNAVAILABLE');
+        const saved=this.textDeliveries.get(this.textDeliveries.key(kind,target,deliveryId,text));
+        if(saved){if(saved.mention?.reference!==mentionReference||saved.mention?.body!==text)fail('TEXT_DELIVERY_ID_CONFLICT');mention=saved.mention;text=saved.text;}
+        else{
+          const row=(await this.messages(wxid,300)).find(row=>row.wechatagentMessageId===mentionReference),sender=row?.senderUsername;
+          if(!row||row.isSend||!Number.isFinite(Number(row.createTime))||Number(row.createTime)>Date.now()/1000+60||Date.now()/1000-Number(row.createTime)>3600||!/^[A-Za-z0-9_-]{1,128}$/.test(sender??'')||sender===this.ownWxid||sender==='notify_all')fail('MENTION_REFERENCE_UNAVAILABLE');
+          const name=String(row.senderDisplay||row.senderDisplayName||row.senderName||sender).replace(/[@\x00-\x1f\x7f\u200b-\u200f\u202a-\u202e]/g,'').trim().slice(0,64)||sender;
+          mention={reference:mentionReference,wxid:sender,body:text};text='@'+name+'\u2005'+text;
+        }
+      }
       const operation=this.textDeliveries.key(kind,target,deliveryId,text);
       let attempt=this.textDeliveries.get(operation);
       if(attempt&&(attempt.account!==identity.account||attempt.wxid!==wxid))fail('TEXT_DELIVERY_ACCOUNT_MISMATCH');
@@ -181,7 +207,7 @@ export class HookOneBot {
         const currentRows=await this.messages(wxid);
         if(proactive)this.assertProactive(kind,target,currentRows,proactive,identity,wxid);
         const baseline=currentRows.map(row=>String(row.localId)).filter(id=>/^\d+$/.test(id));
-        attempt={version:1,key:operation,deliveryId:deliveryId??'',account:identity.account,wxid,text,baseline,
+        attempt={version:1,key:operation,deliveryId:deliveryId??'',account:identity.account,wxid,text,baseline,...(mention?{mention}:{}),
           startedAt:Date.now(),state:'dispatching',...(rejectedBusy?{rejection:rejectedBusy.rejection,firstRejection:rejectedBusy.firstRejection??rejectedBusy.rejection}:{})};
         this.textDeliveries.put(attempt); // Persist before submission; replay must never submit it twice.
         const reject=(code,nativeRet)=>{
@@ -190,7 +216,7 @@ export class HookOneBot {
           this.textDeliveries.put(attempt);
         };
         let accepted;
-        try{accepted=await this.native('/SendTextMsg',{wxidorgid:wxid,msg:text},identity.account);}
+        try{accepted=mention?await this.mentionCommand(this.directory,{account:identity.account,target:wxid,member:mention.wxid,text}):await this.native('/SendTextMsg',{wxidorgid:wxid,msg:text},identity.account);}
         catch(error){
           if(/^API_HTTP_(400|401|403|409|429)$/.test(error.message)){
             reject(error.message);
@@ -246,6 +272,18 @@ export class HookOneBot {
     await this.checkNative();
     if(!this.status.native_sticker_send)return {enabled:false,stickers:[]};
     const key='wechat:'+kind+':'+target;
+    if(typeof query==='string'&&query.trim()){
+      try{
+        const owned=await this.reader('/api/v1/sticker-packs/search?'+new URLSearchParams({conversationKey:key,query:query.replace(/[\u0000-\u001f]/g,' ').trim().slice(0,120),limit:'3'}));
+        const choices=[];
+        for(const item of owned.sendSupported===true?owned.candidates??[]:[]){
+          if(!/^[a-f0-9]{64}$/.test(item.id??''))continue;
+          const prepared=await this.json(this.api.reader_base_url,'/api/v1/sticker-packs/prepare',{method:'POST',headers:{Authorization:'Bearer '+this.api.reader_token,'Content-Type':'application/json'},body:JSON.stringify({conversationKey:key,id:item.id})},15000);
+          if(prepared.ready===true&&/^[a-f0-9]{64}$/.test(prepared.id??''))choices.push({id:prepared.id,description:String(item.caption||prepared.description||'贴合当前话题的表情').slice(0,120),tags:['daily'],source:'wechat-installed-packs',collection:prepared.collection});
+        }
+        if(choices.length)return {enabled:true,stickers:choices,preferredSource:choices[0].collection??'local-library'};
+      }catch{/* No relevant or usable owned sticker: continue to the shared pool. */}
+    }
     const result=await this.reader('/api/v1/stickers?conversationKey='+encodeURIComponent(key)+(typeof query==='string'&&query.trim()?'&query='+encodeURIComponent(query.slice(0,500)):''));
     return {enabled:true,stickers:(result.stickers??[]).filter(item=>/^[a-f0-9]{64}$/.test(item?.id??'')).slice(0,20).map(item=>({id:item.id,receivedAt:item.receivedAt,...(cleanStickerLabel(item)??{})}))};
   }
@@ -368,18 +406,26 @@ export class HookOneBot {
         if(params.wechatagent_source==='proactive'&&(!deliveryId||!/^[a-f0-9]{64}$/.test(params.wechatagent_context_id??'')||
           params.wechatagent_preceding_delivery_id!==undefined&&!/^[a-f0-9]{64}$/.test(params.wechatagent_preceding_delivery_id)))fail('INVALID_PROACTIVE_CONTEXT');
         const proactive=params.wechatagent_source==='proactive'?{contextId:params.wechatagent_context_id,...(params.wechatagent_preceding_delivery_id?{precedingDeliveryId:params.wechatagent_preceding_delivery_id}:{})}:null;
-        if(Array.isArray(params.message)&&params.message.length===1&&params.message[0]?.type==='wechat_sticker'){
+        if(Array.isArray(params.message)&&params.message.length===1&&params.message[0]?.type==='wechat_interaction'){
+          if(proactive)fail('INTERACTION_PROACTIVE_FORBIDDEN');data=await this.interactionSender.send(kind,target,params.message[0].data,deliveryId);
+        }else if(Array.isArray(params.message)&&params.message.length===1&&params.message[0]?.type==='wechat_sticker'){
           data=await this.sendSticker(kind,target,String(params.message[0].data?.id??''),deliveryId,proactive,params.wechatagent_receipt_only===true,params.wechatagent_defer_receipt===true,params.wechatagent_deadline_at,params.wechatagent_abandon_delivery===true);
         }else{
           const text=textSegments(params.message);
-          data=await this.send(kind,target,text,deliveryId,proactive);
+          if(hasVoiceControl(text)){
+            try{voiceRequest(text);}catch{fail('VOICE_MARKER_INVALID');}
+            const anchor=params.wechatagent_voice_anchor;if(anchor!==undefined&&!/^[a-f0-9]{64}$/.test(anchor))fail('VOICE_CONTEXT_ANCHOR_REQUIRED');
+            try{data=await this.voiceSender.send(kind,target,text,deliveryId,proactive,anchor,params.wechatagent_voice_observations);}catch(error){if(/^VOICE_[A-Z_]+$/.test(error.message)&&!(error instanceof AdapterError))fail(error.message);throw error;}
+          }else data=await this.send(kind,target,text,deliveryId,proactive);
         }
+      } else if(action==='get_interaction_capabilities'){
+        const kind=params.kind,target=String(params.target??'');if(!['group','private'].includes(kind)||!this.allowed(kind,target))fail('CONVERSATION_NOT_ALLOWED');data=await this.interactionSender.capabilities(kind,target);
       } else if(['get_sticker_list','get_sticker_labels','save_sticker_labels'].includes(action)){
         const kind=params.kind,target=String(params.target??'');
         if(!['group','private'].includes(kind)||!/^\d+$/.test(target))fail('INVALID_STICKER_TARGET');
         data=action==='get_sticker_list'?await this.stickerList(kind,target,params.query):await this.stickerLabels(kind,target,{operation:action==='get_sticker_labels'?'read':'save',...(action==='get_sticker_labels'?{ids:params.ids}:{labels:params.labels})});
       } else if (action === 'get_status') {
-        data = { online: this.status.hook_account_verified, good: this.status.hook_account_verified && this.status.reader_connected };
+        data = { online: this.status.hook_account_verified, good: this.status.hook_account_verified && this.status.reader_connected,native_voice_send:this.status.native_voice_send===true };
       } else if (action === 'get_version_info') {
         data = { app_name: 'WeChatAgent-WeChat-Hook', app_version: '1', protocol_version: 'v11' };
       } else if (action === 'get_login_info') {
@@ -428,7 +474,7 @@ export class HookOneBot {
       message_type: kind, sub_type: group ? 'normal' : 'friend', message_id: payload.rawid,
       user_id: userId, message: segments, raw_message: content,
       sender: { user_id: userId, nickname: payload.sourceName || payload.senderName || String(userId) },
-      ...({wechatagent:{senderWxid:payload.talkerId,...(group?{memberId:crypto.createHash('sha256').update('wechat-member:'+payload.talkerId).digest('hex')}:{}),...(payload.type===PAT_TYPE?{interaction:'pat'}:forwardedRecord?{forwardedRecord}:quoteReply?{quoteReply}:{})}}),
+      ...({wechatagent:{senderWxid:payload.talkerId,...(payload.historyContext===true?{historyContext:true}:{}),...(payload.recoveredUnread===true?{recoveredUnread:true}:{}),...(group?{memberId:crypto.createHash('sha256').update('wechat-member:'+payload.talkerId).digest('hex')}:{}),...(payload.type===PAT_TYPE?{interaction:'pat'}:forwardedRecord?{forwardedRecord}:quoteReply?{quoteReply}:{})}}),
       ...(group ? { group_id: target, group_name: payload.groupName || String(target) } : {}) };
   }
   enqueue(payload) {
@@ -469,7 +515,7 @@ export class HookOneBot {
           if (socket.readyState === WebSocket.OPEN) { try { socket.send(JSON.stringify(response)); } catch {} }
         });
         socket.addEventListener('error', () => { clearTimeout(connectTimer); resolve(); }, { once: true });
-        socket.addEventListener('close', () => { clearTimeout(connectTimer); resolve(); }, { once: true });
+        socket.addEventListener('close', () => { clearTimeout(connectTimer);for(const controller of this.controllers)controller.abort();resolve(); }, { once: true });
       });
       socket.close(); this.status.ob_connected = false;
       if (!this.stopped) await sleep(1500);
@@ -477,6 +523,8 @@ export class HookOneBot {
   }
   async receiveSse() {
     while (!this.stopped) {
+      // Do not consume startup recovery before the persistent receiver is connected.
+      if(this.socket?.readyState!==WebSocket.OPEN){await sleep(200);continue;}
       const controller = new AbortController(); this.controllers.add(controller);
       let watchdog = setTimeout(() => controller.abort(), 35000);
       try {

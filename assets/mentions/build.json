@@ -1,0 +1,9 @@
+{
+  "version": 2,
+  "weixinSha256": "f487e4f56930456a25fb0d7b058c77e2dcd364e268d49bdfff4dc0e3be26ba36",
+  "targetVersion": "4.1.10.27",
+  "sha256": "ef1116baba0ff2b3ca2fc140d973284998ad5126e8917e4841a3c5e01a61187e",
+  "backend": "text-atlist-v2",
+  "sourceSha256": "a087043887bdde970ee802c2b8c618c40e4d612725d342629a51f4c35713e1b6",
+  "upstreamCommit": "e905d07ade50d2c6472e4eb3bd4f3fe19cf662c6"
+}
